@@ -1,15 +1,13 @@
 const std = @import("std");
 
 // Import the SQLite C API
-const c = @cImport({
-    @cInclude("sqlite3.h");
-});
+const c = @import("c");
 
 const SqlError = error{ SqlError };
 
 fn checkError(rc: c_int, db: ?*c.sqlite3) !void {
     if (rc != c.SQLITE_OK) {
-        const msg = if (db) std.mem.span(c.sqlite3_errmsg(db)) else "unknown error";
+        const msg = std.mem.span(c.sqlite3_errmsg(db.?));
         std.debug.print("SQLite error: {s}\n", .{msg});
         return SqlError.SqlError;
     }
@@ -22,13 +20,13 @@ fn initDb(dbPath: []const u8) !*c.sqlite3 {
     try checkError(rc, db);
 
     const createTable = "CREATE TABLE IF NOT EXISTS tasks (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  description TEXT NOT NULL,\n  completed INTEGER NOT NULL DEFAULT 0\n)";
-    var errMsg: ?[*c]u8 = null;
+    var errMsg: [*c]u8 = undefined;
     // sqlite3_exec expects a null-terminated string. Our Zig string literal is null-terminated.
     const rc2 = c.sqlite3_exec(db, createTable, null, null, &errMsg);
     if (rc2 != c.SQLITE_OK) {
-        const msg = if (errMsg) std.mem.span(errMsg) else "unknown error";
+        const msg = if (errMsg != 0) std.mem.span(errMsg) else "unknown error";
         std.debug.print("SQLite exec error: {s}\n", .{msg});
-        if (errMsg) c.sqlite3_free(errMsg);
+        if (errMsg != 0) c.sqlite3_free(errMsg);
         return SqlError.SqlError;
     }
     return db.?;
@@ -50,14 +48,15 @@ fn addTask(db: *c.sqlite3, desc: []const u8) !void {
 }
 
 // List all tasks
-fn listTasks(db: *c.sqlite3) !void {
+fn listTasks(io: std.Io, db: *c.sqlite3) !void {
     var stmt: ?*c.sqlite3_stmt = null;
     const sql = "SELECT id, description, completed FROM tasks ORDER BY id;";
     const rc = c.sqlite3_prepare_v2(db, sql, @intCast(sql.len + 1), &stmt, null);
     try checkError(rc, db);
     defer _ = c.sqlite3_finalize(stmt);
 
-    const stdout = std.io.getStdOut().writer();
+    const stdout_buffer: []u8 = undefined;
+    var stdout = std.Io.File.stdout().writer(io, stdout_buffer).interface;
 
     while (true) {
         const step = c.sqlite3_step(stmt);
@@ -71,6 +70,7 @@ fn listTasks(db: *c.sqlite3) !void {
                 if (completed) "x" else " ",
                 desc,
             });
+            try stdout.flush();
         } else if (step == c.SQLITE_DONE) {
             break;
         } else {
@@ -94,8 +94,10 @@ fn completeTask(db: *c.sqlite3, id: i64) !void {
     }
 }
 
-pub fn main() !void {
-    var argsIter = std.process.args();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const args = init.minimal.args;
+    var argsIter = try std.process.Args.iterateAllocator(args, init.arena.allocator());
     _ = argsIter.next(); // skip program name
 
     const cmd = argsIter.next() orelse {
@@ -116,7 +118,7 @@ pub fn main() !void {
         try addTask(db, desc);
         std.debug.print("Task added.\n", .{});
     } else if (std.mem.eql(u8, cmd, "list")) {
-        try listTasks(db);
+        try listTasks(io, db);
     } else if (std.mem.eql(u8, cmd, "complete")) {
         const idStr = argsIter.next() orelse {
             std.debug.print("Missing id for 'complete'.\n", .{});
