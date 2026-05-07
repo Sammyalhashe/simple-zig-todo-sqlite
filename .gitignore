@@ -6,3 +6,5 @@ zig-out/
 
 # SQLite database (optional – keep if you want persistence)
 todo.db
+
+result/
