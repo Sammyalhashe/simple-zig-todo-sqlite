@@ -10,6 +10,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize
     });
     translate_c.linkSystemLibrary("sqlite3", .{});
+    translate_c.linkSystemLibrary("mysqlclient", .{});
 
     const exe = b.addExecutable(.{
         .name = "todo",
@@ -25,6 +26,8 @@ pub fn build(b: *std.Build) void {
             }
         }),
     });
+    exe.root_module.linkSystemLibrary("sqlite3", .{});
+    exe.root_module.linkSystemLibrary("mysqlclient", .{});
 
     b.installArtifact(exe);
 }

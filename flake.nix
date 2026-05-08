@@ -27,12 +27,19 @@
             zig.hook
             pkg-config
           ];
-          buildInputs = with pkgs; [ sqlite ];
+          buildInputs = with pkgs; [
+            sqlite
+            mariadb-connector-c
+            sshpass
+          ];
         };
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             zig
             sqlite
+            mariadb-connector-c
+            sshpass
+            pkg-config
             zls
           ];
         };
