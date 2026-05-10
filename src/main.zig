@@ -170,17 +170,18 @@ fn listTasks(io: std.Io, db: Db) !void {
 }
 
 // Mark a task as completed
-fn completeTask(io: std.Io, db: Db, id_str: []const u8) !void {
+fn changeCompletionStatus(io: std.Io, db: Db, id_str: []const u8, complete: bool) !void {
     switch (db) {
         .sqlite => |s| {
             const id = try std.fmt.parseInt(i64, id_str, 10);
             var stmt: ?*c.sqlite3_stmt = null;
-            const sql = "UPDATE tasks SET completed = 1 WHERE id = ?;";
+            const sql = "UPDATE tasks SET completed = ? WHERE id = ?;";
             const rc = c.sqlite3_prepare_v2(s, sql, @intCast(sql.len + 1), &stmt, null);
             try checkError(rc, s);
             defer _ = c.sqlite3_finalize(stmt);
 
-            _ = c.sqlite3_bind_int64(stmt, 1, id);
+            _ = c.sqlite3_bind_int64(stmt, 1, @intFromBool(complete));
+            _ = c.sqlite3_bind_int64(stmt, 2, id);
             const rc2 = c.sqlite3_step(stmt);
             if (rc2 != c.SQLITE_DONE) {
                 try checkError(rc2, s);
@@ -190,7 +191,8 @@ fn completeTask(io: std.Io, db: Db, id_str: []const u8) !void {
             const ts = std.Io.Timestamp.now(io, .real);
             const seconds = @as(u64, @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_s)));
             // Using task_id (varchar) for MariaDB
-            const query = try std.fmt.allocPrint(std.heap.page_allocator, "UPDATE supernotedb.t_schedule_task SET status = 'completed', completed_time = {d} WHERE task_id = '{s}';", .{
+            const query = try std.fmt.allocPrint(std.heap.page_allocator, "UPDATE supernotedb.t_schedule_task SET status = '{s}', completed_time = {d} WHERE task_id = '{s}';", .{
+                if (complete) "completed" else "needsAction",
                 seconds,
                 id_str,
             });
@@ -345,8 +347,13 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, cmd, "complete")) {
             const idStr = cmdPair.d_args orelse unreachable;
             // completeTask now takes the id_str directly to handle both int (SQLite) and varchar (MariaDB)
-            try completeTask(io, db, idStr.items[0]);
+            try changeCompletionStatus(io, db, idStr.items[0], true);
             std.debug.print("Task {s} marked as completed.\n", .{idStr.items[0]});
+        } else if (std.mem.eql(u8, cmd, "incomplete")) {
+            const idStr = cmdPair.d_args orelse unreachable;
+            // completeTask now takes the id_str directly to handle both int (SQLite) and varchar (MariaDB)
+            try changeCompletionStatus(io, db, idStr.items[0], false);
+            std.debug.print("Task {s} marked as incomplete.\n", .{idStr.items[0]});
         } else {
             std.debug.print("Unknown command: {s}\n", .{cmd});
         }
