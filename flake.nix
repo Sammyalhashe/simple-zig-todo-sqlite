@@ -1,11 +1,9 @@
 {
-  description = "Zig tui todo application";
+  description = "Zig todo CLI with SQLite/MariaDB backend and optional daemon";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
-    flake-utils = {
-      url = "github:numtide/flake-utils";
-    };
+    flake-utils.url = "github:numtide/flake-utils";
   };
 
   outputs =
@@ -14,35 +12,17 @@
       nixpkgs,
       flake-utils,
     }:
-    flake-utils.lib.eachDefaultSystem (
+    (flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = import nixpkgs { inherit system; };
       in
       {
-        packages.default = pkgs.stdenv.mkDerivation {
-          name = "todo";
-          src = ./.;
-          nativeBuildInputs = with pkgs; [
-            zig.hook
-            pkg-config
-          ];
-          buildInputs = with pkgs; [
-            sqlite
-            mariadb-connector-c
-            sshpass
-          ];
-        };
-        devShells.default = pkgs.mkShell {
-          buildInputs = with pkgs; [
-            zig
-            sqlite
-            mariadb-connector-c
-            sshpass
-            pkg-config
-            zls
-          ];
-        };
+        packages.default = import ./nix/package.nix { inherit pkgs; src = ./.; };
+        devShells.default = import ./nix/devshell.nix { inherit pkgs; };
       }
-    );
+    ))
+    // {
+      homeManagerModules.default = import ./nix/hm-module.nix { inherit self; };
+    };
 }

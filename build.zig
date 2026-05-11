@@ -12,18 +12,37 @@ pub fn build(b: *std.Build) void {
     translate_c.linkSystemLibrary("sqlite3", .{});
     translate_c.linkSystemLibrary("mysqlclient", .{});
 
+    const c_module = translate_c.createModule();
+
+    const db_module = b.createModule(.{
+        .root_source_file = b.path("src/db.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "c", .module = c_module },
+        },
+    });
+
+    const server_module = b.createModule(.{
+        .root_source_file = b.path("src/server.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "db", .module = db_module },
+        },
+    });
+
     const exe = b.addExecutable(.{
         .name = "todo",
         .root_module = b.createModule(.{
-            .root_source_file =   b.path("src/main.zig"),
+            .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{
-                    .name = "c",
-                    .module = translate_c.createModule()
-                },
-            }
+                .{ .name = "c", .module = c_module },
+                .{ .name = "db", .module = db_module },
+                .{ .name = "server", .module = server_module },
+            },
         }),
     });
     exe.root_module.linkSystemLibrary("sqlite3", .{});
