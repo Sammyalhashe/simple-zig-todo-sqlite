@@ -173,9 +173,15 @@ pub fn main(init: std.process.Init) !void {
             .stderr = .inherit,
         });
         try std.Io.sleep(io, .{ .nanoseconds = 2 * std.time.ns_per_s }, .real);
-        database = .{ .mariadb = try db.initMariaDb("127.0.0.1", 3307, remote.d_password) };
+        database = .{ .mariadb = db.initMariaDb("127.0.0.1", 3307, remote.d_password) catch {
+            std.debug.print("Failed to connect to remote database.\n", .{});
+            return;
+        } };
     } else {
-        database = .{ .sqlite = try db.initDb(dbPath) };
+        database = .{ .sqlite = db.initDb(dbPath) catch {
+            std.debug.print("Failed to open local database.\n", .{});
+            return;
+        } };
     }
 
     defer if (tunnel_child) |*child| {
@@ -188,7 +194,10 @@ pub fn main(init: std.process.Init) !void {
         const cmd = cmdPair.d_cmd;
         if (std.mem.eql(u8, cmd, "add")) {
             const desc = cmdPair.d_args orelse unreachable;
-            try db.addTask(database, desc.items[0]);
+            db.addTask(database, desc.items[0]) catch {
+                std.debug.print("Error: failed to add task.\n", .{});
+                continue;
+            };
             std.debug.print("Task added.\n", .{});
         } else if (std.mem.eql(u8, cmd, "list")) {
             var showAll = false;
@@ -200,7 +209,10 @@ pub fn main(init: std.process.Init) !void {
                 }
             }
             if (jsonOutput) {
-                const tasks = try db.queryTasks(database, showAll, init.arena.allocator());
+                const tasks = db.queryTasks(database, showAll, init.arena.allocator()) catch {
+                    std.debug.print("Error: failed to query tasks.\n", .{});
+                    continue;
+                };
                 std.debug.print("[", .{});
                 for (tasks.items, 0..) |task, i| {
                     if (i > 0) std.debug.print(",", .{});
@@ -208,19 +220,30 @@ pub fn main(init: std.process.Init) !void {
                 }
                 std.debug.print("]\n", .{});
             } else {
-                try db.listTasks(io, database, showAll);
+                db.listTasks(io, database, showAll) catch {
+                    std.debug.print("Error: failed to list tasks.\n", .{});
+                    continue;
+                };
             }
         } else if (std.mem.eql(u8, cmd, "complete")) {
             const idStr = cmdPair.d_args orelse unreachable;
-            try db.changeCompletionStatus(io, database, idStr.items[0], true);
+            db.changeCompletionStatus(io, database, idStr.items[0], true) catch {
+                std.debug.print("Error: failed to complete task {s}.\n", .{idStr.items[0]});
+                continue;
+            };
             std.debug.print("Task {s} marked as completed.\n", .{idStr.items[0]});
         } else if (std.mem.eql(u8, cmd, "incomplete")) {
             const idStr = cmdPair.d_args orelse unreachable;
-            try db.changeCompletionStatus(io, database, idStr.items[0], false);
+            db.changeCompletionStatus(io, database, idStr.items[0], false) catch {
+                std.debug.print("Error: failed to mark task {s} as incomplete.\n", .{idStr.items[0]});
+                continue;
+            };
             std.debug.print("Task {s} marked as incomplete.\n", .{idStr.items[0]});
         } else if (std.mem.eql(u8, cmd, "serve")) {
             const socket_path = "/tmp/todo.sock";
-            try server.serve(io, database, socket_path);
+            server.serve(io, database, socket_path) catch {
+                std.debug.print("Error: server failed.\n", .{});
+            };
         } else {
             std.debug.print("Unknown command: {s}\n", .{cmd});
         }
