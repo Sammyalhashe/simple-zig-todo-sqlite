@@ -1,6 +1,7 @@
 const std = @import("std");
 const db = @import("db");
 const server = @import("server");
+const tui = @import("tui");
 
 const Iterator = std.process.Args.Iterator;
 
@@ -96,9 +97,9 @@ pub fn main(init: std.process.Init) !void {
             .d_args = Args.empty,
             .d_cmd = firstArg,
         };
-        // Check for --all and --json flags
+        // Check for --all, --json, -i flags
         while (argsIter.next()) |nextArg| {
-            if (std.mem.eql(u8, nextArg, "--all") or std.mem.eql(u8, nextArg, "--json")) {
+            if (std.mem.eql(u8, nextArg, "--all") or std.mem.eql(u8, nextArg, "--json") or std.mem.eql(u8, nextArg, "-i")) {
                 try cmdPair.d_args.?.append(init.arena.allocator(), nextArg);
             }
         }
@@ -202,13 +203,19 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, cmd, "list")) {
             var showAll = false;
             var jsonOutput = false;
+            var interactive = false;
             if (cmdPair.d_args) |a| {
                 for (a.items) |flag| {
                     if (std.mem.eql(u8, flag, "--all")) showAll = true;
                     if (std.mem.eql(u8, flag, "--json")) jsonOutput = true;
+                    if (std.mem.eql(u8, flag, "-i")) interactive = true;
                 }
             }
-            if (jsonOutput) {
+            if (interactive) {
+                tui.run(io, database, showAll) catch {
+                    std.debug.print("Error: interactive mode failed.\n", .{});
+                };
+            } else if (jsonOutput) {
                 const tasks = db.queryTasks(database, showAll, init.arena.allocator()) catch {
                     std.debug.print("Error: failed to query tasks.\n", .{});
                     continue;

@@ -4,6 +4,7 @@ pkgs.mkShell {
     zig
     sqlite
     mariadb-connector-c
+    ncurses
     sshpass
     pkg-config
     zls

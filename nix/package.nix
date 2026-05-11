@@ -9,6 +9,7 @@ pkgs.stdenv.mkDerivation {
   buildInputs = with pkgs; [
     sqlite
     mariadb-connector-c
+    ncurses
     sshpass
   ];
 }

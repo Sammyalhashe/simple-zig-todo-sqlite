@@ -11,6 +11,7 @@ pub fn build(b: *std.Build) void {
     });
     translate_c.linkSystemLibrary("sqlite3", .{});
     translate_c.linkSystemLibrary("mysqlclient", .{});
+    translate_c.linkSystemLibrary("ncurses", .{});
 
     const c_module = translate_c.createModule();
 
@@ -32,6 +33,16 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const tui_module = b.createModule(.{
+        .root_source_file = b.path("src/tui.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "c", .module = c_module },
+            .{ .name = "db", .module = db_module },
+        },
+    });
+
     const exe = b.addExecutable(.{
         .name = "todo",
         .root_module = b.createModule(.{
@@ -42,11 +53,13 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "c", .module = c_module },
                 .{ .name = "db", .module = db_module },
                 .{ .name = "server", .module = server_module },
+                .{ .name = "tui", .module = tui_module },
             },
         }),
     });
     exe.root_module.linkSystemLibrary("sqlite3", .{});
     exe.root_module.linkSystemLibrary("mysqlclient", .{});
+    exe.root_module.linkSystemLibrary("ncurses", .{});
 
     b.installArtifact(exe);
 
