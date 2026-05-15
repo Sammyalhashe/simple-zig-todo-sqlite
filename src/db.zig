@@ -1,13 +1,10 @@
 const std = @import("std");
 const c = @import("c");
+pub const json = @import("json");
 
 pub const SqlError = error{SqlError};
 
-pub const Task = struct {
-    id: []const u8,
-    title: []const u8,
-    status: []const u8,
-};
+pub const Task = json.Task;
 
 pub const Db = union(enum) {
     sqlite: *c.sqlite3,
@@ -182,9 +179,12 @@ pub fn listTasks(io: std.Io, db: Db, showAll: bool) !void {
 fn validateIdStr(id_str: []const u8) !void {
     if (id_str.len == 0 or id_str.len > 255) return error.SqlError;
     for (id_str) |ch| {
-        if (ch == '\'' or ch == ';' or ch == '\\' or ch == '"') {
-            std.debug.print("Error: invalid character in task ID.\n", .{});
-            return error.SqlError;
+        switch (ch) {
+            '0'...'9', 'a'...'z', 'A'...'Z', '-', '_' => {},
+            else => {
+                std.debug.print("Error: invalid character in task ID.\n", .{});
+                return error.SqlError;
+            },
         }
     }
 }

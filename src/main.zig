@@ -1,5 +1,6 @@
 const std = @import("std");
 const db = @import("db");
+const json = @import("json");
 const server = @import("server");
 const tui = @import("tui");
 
@@ -22,22 +23,23 @@ const StartupOption = struct {
     d_remoteOptions: ?RemoteOptions = null,
 };
 
-fn writeJsonEscaped(w: *std.Io.Writer, s: []const u8) std.Io.Writer.Error!void {
-    for (s) |ch| {
-        switch (ch) {
-            '"' => try w.writeAll("\\\""),
-            '\\' => try w.writeAll("\\\\"),
-            '\n' => try w.writeAll("\\n"),
-            '\t' => try w.writeAll("\\t"),
-            else => {
-                if (ch < 0x20) {
-                    try w.print("\\u{x:0>4}", .{ch});
-                } else {
-                    try w.print("{c}", .{ch});
-                }
-            },
+fn joinWithSpaces(alloc: std.mem.Allocator, parts: []const []const u8) ![]u8 {
+    var totalLen: usize = 0;
+    for (parts, 0..) |part, i| {
+        totalLen += part.len;
+        if (i < parts.len - 1) totalLen += 1;
+    }
+    const joined = try alloc.alloc(u8, totalLen);
+    var pos: usize = 0;
+    for (parts, 0..) |part, i| {
+        @memcpy(joined[pos..][0..part.len], part);
+        pos += part.len;
+        if (i < parts.len - 1) {
+            joined[pos] = ' ';
+            pos += 1;
         }
     }
+    return joined;
 }
 
 fn stdoutWrite(io: std.Io, data: []const u8) void {
@@ -96,22 +98,7 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("Missing description for '{s}'.\n", .{firstArg});
             return;
         }
-        // Join all parts with spaces
-        var totalLen: usize = 0;
-        for (parts.items, 0..) |part, i| {
-            totalLen += part.len;
-            if (i < parts.items.len - 1) totalLen += 1;
-        }
-        const joined = try init.arena.allocator().alloc(u8, totalLen);
-        var pos: usize = 0;
-        for (parts.items, 0..) |part, i| {
-            @memcpy(joined[pos..][0..part.len], part);
-            pos += part.len;
-            if (i < parts.items.len - 1) {
-                joined[pos] = ' ';
-                pos += 1;
-            }
-        }
+        const joined = try joinWithSpaces(init.arena.allocator(), parts.items);
         var cmdPair: CmdPair = .{
             .d_args = Args.empty,
             .d_cmd = firstArg,
@@ -271,21 +258,11 @@ pub fn main(init: std.process.Init) !void {
                     std.debug.print("Error: failed to query tasks.\n", .{});
                     continue;
                 };
-                var stdout_buf: [8192]u8 = undefined;
-                var w = std.Io.File.stdout().writer(io, &stdout_buf);
-                w.interface.writeAll("[") catch {};
-                for (tasks.items, 0..) |task, i| {
-                    if (i > 0) w.interface.writeAll(",") catch {};
-                    w.interface.writeAll("{\"id\":\"") catch {};
-                    writeJsonEscaped(&w.interface, task.id) catch {};
-                    w.interface.writeAll("\",\"title\":\"") catch {};
-                    writeJsonEscaped(&w.interface, task.title) catch {};
-                    w.interface.writeAll("\",\"status\":\"") catch {};
-                    writeJsonEscaped(&w.interface, task.status) catch {};
-                    w.interface.writeAll("\"}") catch {};
-                }
-                w.interface.writeAll("]\n") catch {};
-                w.interface.flush() catch {};
+                const output = json.serializeTasksJson(tasks.items, init.arena.allocator()) catch {
+                    std.debug.print("Error: failed to serialize tasks.\n", .{});
+                    continue;
+                };
+                stdoutWrite(io, output);
             } else {
                 db.listTasks(io, database, showAll) catch {
                     std.debug.print("Error: failed to list tasks.\n", .{});
