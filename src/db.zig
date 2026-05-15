@@ -84,9 +84,9 @@ pub fn queryTasks(db: Db, showAll: bool, allocator: std.mem.Allocator) !std.Arra
         .sqlite => |s| {
             var stmt: ?*c.sqlite3_stmt = null;
             const sql = if (showAll)
-                "SELECT id, title, status FROM tasks WHERE is_deleted = 'N' ORDER BY last_modified DESC;"
+                "SELECT id, title, status FROM tasks ORDER BY last_modified DESC;"
             else
-                "SELECT id, title, status FROM tasks WHERE is_deleted = 'N' AND status = 'needsAction' ORDER BY last_modified DESC;";
+                "SELECT id, title, status FROM tasks WHERE status != 'completed' ORDER BY last_modified DESC;";
             const rc = c.sqlite3_prepare_v2(s, sql, @intCast(sql.len + 1), &stmt, null);
             try checkError(rc, s);
             defer _ = c.sqlite3_finalize(stmt);
@@ -117,9 +117,9 @@ pub fn queryTasks(db: Db, showAll: bool, allocator: std.mem.Allocator) !std.Arra
         },
         .mariadb => |m| {
             const query = if (showAll)
-                "SELECT task_id, title, status FROM supernotedb.t_schedule_task WHERE is_deleted = 'N' ORDER BY last_modified DESC;"
+                "SELECT task_id, title, status FROM supernotedb.t_schedule_task WHERE is_deleted != 'Y' ORDER BY last_modified DESC;"
             else
-                "SELECT task_id, title, status FROM supernotedb.t_schedule_task WHERE is_deleted = 'N' AND status = 'needsAction' ORDER BY last_modified DESC;";
+                "SELECT task_id, title, status FROM supernotedb.t_schedule_task WHERE is_deleted != 'Y' AND status != 'completed' ORDER BY last_modified DESC;";
             if (c.mysql_query(m, query) != 0) {
                 std.debug.print("MariaDB query error: {s}\n", .{c.mysql_error(m)});
                 return error.SqlError;
