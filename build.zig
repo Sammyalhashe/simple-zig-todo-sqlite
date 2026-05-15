@@ -15,12 +15,19 @@ pub fn build(b: *std.Build) void {
 
     const c_module = translate_c.createModule();
 
+    const json_module = b.createModule(.{
+        .root_source_file = b.path("src/json.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const db_module = b.createModule(.{
         .root_source_file = b.path("src/db.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "c", .module = c_module },
+            .{ .name = "json", .module = json_module },
         },
     });
 
@@ -29,6 +36,17 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "db", .module = db_module },
+            .{ .name = "json", .module = json_module },
+        },
+    });
+
+    const sync_module = b.createModule(.{
+        .root_source_file = b.path("src/sync.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "c", .module = c_module },
             .{ .name = "db", .module = db_module },
         },
     });
@@ -52,7 +70,9 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "c", .module = c_module },
                 .{ .name = "db", .module = db_module },
+                .{ .name = "json", .module = json_module },
                 .{ .name = "server", .module = server_module },
+                .{ .name = "sync", .module = sync_module },
                 .{ .name = "tui", .module = tui_module },
             },
         }),
@@ -62,6 +82,35 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkSystemLibrary("ncurses", .{});
 
     b.installArtifact(exe);
+
+    // Test step
+    const test_step = b.step("test", "Run unit tests");
+
+    // Test the pure json module (no C deps)
+    const json_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/json.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(json_tests).step);
+
+    // Test the sync module (needs C and db for transitive imports)
+    const sync_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/sync.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "c", .module = c_module },
+                .{ .name = "db", .module = db_module },
+            },
+        }),
+    });
+    sync_tests.root_module.linkSystemLibrary("sqlite3", .{});
+    sync_tests.root_module.linkSystemLibrary("mysqlclient", .{});
+    test_step.dependOn(&b.addRunArtifact(sync_tests).step);
 
     // Convenience run step
     const run_exe = b.addRunArtifact(exe);

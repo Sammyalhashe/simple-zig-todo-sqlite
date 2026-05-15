@@ -1,6 +1,9 @@
 const std = @import("std");
+const c = @import("c");
 const db = @import("db");
+const json = @import("json");
 const server = @import("server");
+const sync = @import("sync");
 const tui = @import("tui");
 
 const Iterator = std.process.Args.Iterator;
@@ -22,22 +25,23 @@ const StartupOption = struct {
     d_remoteOptions: ?RemoteOptions = null,
 };
 
-fn writeJsonEscaped(w: *std.Io.Writer, s: []const u8) std.Io.Writer.Error!void {
-    for (s) |ch| {
-        switch (ch) {
-            '"' => try w.writeAll("\\\""),
-            '\\' => try w.writeAll("\\\\"),
-            '\n' => try w.writeAll("\\n"),
-            '\t' => try w.writeAll("\\t"),
-            else => {
-                if (ch < 0x20) {
-                    try w.print("\\u{x:0>4}", .{ch});
-                } else {
-                    try w.print("{c}", .{ch});
-                }
-            },
+fn joinWithSpaces(alloc: std.mem.Allocator, parts: []const []const u8) ![]u8 {
+    var totalLen: usize = 0;
+    for (parts, 0..) |part, i| {
+        totalLen += part.len;
+        if (i < parts.len - 1) totalLen += 1;
+    }
+    const joined = try alloc.alloc(u8, totalLen);
+    var pos: usize = 0;
+    for (parts, 0..) |part, i| {
+        @memcpy(joined[pos..][0..part.len], part);
+        pos += part.len;
+        if (i < parts.len - 1) {
+            joined[pos] = ' ';
+            pos += 1;
         }
     }
+    return joined;
 }
 
 fn stdoutWrite(io: std.Io, data: []const u8) void {
@@ -55,11 +59,15 @@ fn printHelp(io: std.Io) void {
         \\  incomplete <id>       Mark task as incomplete
         \\  serve                 Start JSON-RPC daemon on Unix socket
         \\  interactive           Interactive TUI mode (alias for list -i)
+        \\  sync [push|pull|both] [--dry-run]
+        \\                        Sync tasks between local SQLite and remote MariaDB
         \\
         \\Flags:
         \\  -r, --remote <host>   Remote MariaDB host (via SSH tunnel)
         \\  -p, --password <pw>   Password for remote connection
         \\  -h, --help            Show this help
+        \\
+        \\Sync requires -r flag. Direction defaults to 'both' if omitted.
         \\
     ;
     stdoutWrite(io, help);
@@ -96,22 +104,7 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("Missing description for '{s}'.\n", .{firstArg});
             return;
         }
-        // Join all parts with spaces
-        var totalLen: usize = 0;
-        for (parts.items, 0..) |part, i| {
-            totalLen += part.len;
-            if (i < parts.items.len - 1) totalLen += 1;
-        }
-        const joined = try init.arena.allocator().alloc(u8, totalLen);
-        var pos: usize = 0;
-        for (parts.items, 0..) |part, i| {
-            @memcpy(joined[pos..][0..part.len], part);
-            pos += part.len;
-            if (i < parts.items.len - 1) {
-                joined[pos] = ' ';
-                pos += 1;
-            }
-        }
+        const joined = try joinWithSpaces(init.arena.allocator(), parts.items);
         var cmdPair: CmdPair = .{
             .d_args = Args.empty,
             .d_cmd = firstArg,
@@ -158,6 +151,10 @@ pub fn main(init: std.process.Init) !void {
             .d_cmd = firstArg,
         };
         try commandAndArgs.append(init.arena.allocator(), cmdPair);
+    } else if (std.mem.eql(u8, firstArg, "sync")) {
+        std.debug.print("Error: sync requires -r <host> flag for remote database.\n", .{});
+        std.debug.print("Usage: todo -r <host> -p <password> sync [push|pull|both] [--dry-run]\n", .{});
+        return;
     } else {
         // Assume firstArg might be a flag
         var currentArg: ?[]const u8 = firstArg;
@@ -189,11 +186,22 @@ pub fn main(init: std.process.Init) !void {
                     return;
                 }
             } else {
-                const cmdPair: CmdPair = .{
-                    .d_cmd = arg,
-                    .d_args = Args.empty,
-                };
-                try commandAndArgs.append(init.arena.allocator(), cmdPair);
+                if (std.mem.eql(u8, arg, "sync")) {
+                    var cmdPair: CmdPair = .{
+                        .d_cmd = arg,
+                        .d_args = Args.empty,
+                    };
+                    while (argsIter.next()) |syncArg| {
+                        try cmdPair.d_args.?.append(init.arena.allocator(), syncArg);
+                    }
+                    try commandAndArgs.append(init.arena.allocator(), cmdPair);
+                } else {
+                    const cmdPair: CmdPair = .{
+                        .d_cmd = arg,
+                        .d_args = Args.empty,
+                    };
+                    try commandAndArgs.append(init.arena.allocator(), cmdPair);
+                }
                 break;
             }
             currentArg = argsIter.next();
@@ -203,11 +211,56 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    var is_sync_command = false;
+    for (commandAndArgs.items) |cmdPair| {
+        if (std.mem.eql(u8, cmdPair.d_cmd, "sync")) {
+            is_sync_command = true;
+            break;
+        }
+    }
+
     const dbPath = "todo.db\x00";
 
     var tunnel_child: ?std.process.Child = null;
     var database: db.Db = undefined;
-    if (startupOptions.d_remoteOptions) |remote| {
+    var local_sqlite: ?*c.sqlite3 = null;
+    var remote_mariadb: ?*c.MYSQL = null;
+
+    if (is_sync_command) {
+        const remote = startupOptions.d_remoteOptions orelse {
+            std.debug.print("Error: sync requires -r <host> flag for remote database.\n", .{});
+            return;
+        };
+
+        local_sqlite = db.initDb(dbPath) catch {
+            std.debug.print("Error: failed to open local database.\n", .{});
+            return;
+        };
+
+        std.debug.print("Opening SSH tunnel to {s}...\n", .{remote.d_dbUri});
+
+        var argv: std.ArrayList([]const u8) = std.ArrayList([]const u8).empty;
+        if (remote.d_password) |pw| {
+            try argv.appendSlice(init.arena.allocator(), &[_][]const u8{ "sshpass", "-p", pw });
+        }
+        try argv.appendSlice(init.arena.allocator(), &[_][]const u8{
+            "ssh", "-o", "StrictHostKeyChecking=no", "-N", "-L", "3307:127.0.0.1:3306", remote.d_dbUri,
+        });
+
+        tunnel_child = try std.process.spawn(io, .{
+            .argv = argv.items,
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .inherit,
+        });
+        try std.Io.sleep(io, .{ .nanoseconds = 2 * std.time.ns_per_s }, .real);
+        remote_mariadb = db.initMariaDb("127.0.0.1", 3307, remote.d_password) catch {
+            std.debug.print("Error: failed to connect to remote database.\n", .{});
+            return;
+        };
+
+        database = .{ .sqlite = local_sqlite.? };
+    } else if (startupOptions.d_remoteOptions) |remote| {
         std.debug.print("Opening SSH tunnel to {s}...\n", .{remote.d_dbUri});
 
         var argv: std.ArrayList([]const u8) = std.ArrayList([]const u8).empty;
@@ -240,7 +293,14 @@ pub fn main(init: std.process.Init) !void {
         child.kill(io);
     };
 
-    defer db.close(database);
+    defer {
+        if (is_sync_command) {
+            if (local_sqlite) |s| _ = c.sqlite3_close(s);
+            if (remote_mariadb) |m| c.mysql_close(m);
+        } else {
+            db.close(database);
+        }
+    }
 
     for (commandAndArgs.items) |cmdPair| {
         const cmd = cmdPair.d_cmd;
@@ -271,21 +331,11 @@ pub fn main(init: std.process.Init) !void {
                     std.debug.print("Error: failed to query tasks.\n", .{});
                     continue;
                 };
-                var stdout_buf: [8192]u8 = undefined;
-                var w = std.Io.File.stdout().writer(io, &stdout_buf);
-                w.interface.writeAll("[") catch {};
-                for (tasks.items, 0..) |task, i| {
-                    if (i > 0) w.interface.writeAll(",") catch {};
-                    w.interface.writeAll("{\"id\":\"") catch {};
-                    writeJsonEscaped(&w.interface, task.id) catch {};
-                    w.interface.writeAll("\",\"title\":\"") catch {};
-                    writeJsonEscaped(&w.interface, task.title) catch {};
-                    w.interface.writeAll("\",\"status\":\"") catch {};
-                    writeJsonEscaped(&w.interface, task.status) catch {};
-                    w.interface.writeAll("\"}") catch {};
-                }
-                w.interface.writeAll("]\n") catch {};
-                w.interface.flush() catch {};
+                const output = json.serializeTasksJson(tasks.items, init.arena.allocator()) catch {
+                    std.debug.print("Error: failed to serialize tasks.\n", .{});
+                    continue;
+                };
+                stdoutWrite(io, output);
             } else {
                 db.listTasks(io, database, showAll) catch {
                     std.debug.print("Error: failed to list tasks.\n", .{});
@@ -306,6 +356,39 @@ pub fn main(init: std.process.Init) !void {
                 continue;
             };
             std.debug.print("Task {s} marked as incomplete.\n", .{idStr.items[0]});
+        } else if (std.mem.eql(u8, cmd, "sync")) {
+            var direction: sync.SyncDirection = .both;
+            var dry_run = false;
+            if (cmdPair.d_args) |a| {
+                for (a.items) |syncArg| {
+                    if (std.mem.eql(u8, syncArg, "push")) {
+                        direction = .push;
+                    } else if (std.mem.eql(u8, syncArg, "pull")) {
+                        direction = .pull;
+                    } else if (std.mem.eql(u8, syncArg, "both")) {
+                        direction = .both;
+                    } else if (std.mem.eql(u8, syncArg, "--dry-run")) {
+                        dry_run = true;
+                    } else {
+                        std.debug.print("Error: unknown sync argument '{s}'.\n", .{syncArg});
+                        return;
+                    }
+                }
+            }
+
+            const sqlite_ptr = local_sqlite orelse {
+                std.debug.print("Error: sync requires local SQLite database.\n", .{});
+                return;
+            };
+            const mariadb_ptr = remote_mariadb orelse {
+                std.debug.print("Error: sync requires remote MariaDB database.\n", .{});
+                return;
+            };
+
+            _ = sync.syncTasks(io, sqlite_ptr, mariadb_ptr, direction, dry_run, init.arena.allocator()) catch {
+                std.debug.print("Error: sync failed.\n", .{});
+                continue;
+            };
         } else if (std.mem.eql(u8, cmd, "serve")) {
             const socket_path = "/tmp/todo.sock";
             server.serve(io, database, socket_path) catch {

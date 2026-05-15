@@ -1,5 +1,6 @@
 const std = @import("std");
 const db = @import("db");
+const json = @import("json");
 const net = std.Io.net;
 
 const allocator = std.heap.page_allocator;
@@ -28,6 +29,11 @@ pub fn serve(io: std.Io, database: db.Db, socket_path: []const u8) !void {
     }
 }
 
+const Response = struct {
+    data: []const u8,
+    allocated: bool,
+};
+
 fn handleConnection(io: std.Io, database: db.Db, stream: *net.Stream) !void {
     var read_buf: [4096]u8 = undefined;
     var write_buf: [8192]u8 = undefined;
@@ -48,13 +54,13 @@ fn handleConnection(io: std.Io, database: db.Db, stream: *net.Stream) !void {
         if (n == 0) return;
 
         if (chunk[0] == '\n') {
-            const response = processRequest(io, database, line_buf[0..line_len]) catch "{\"error\":\"internal error\"}\n";
-            try writer.interface.writeAll(response);
+            const response = processRequest(io, database, line_buf[0..line_len]) catch Response{
+                .data = "{\"error\":\"internal error\"}\n",
+                .allocated = false,
+            };
+            defer if (response.allocated) allocator.free(response.data);
+            try writer.interface.writeAll(response.data);
             try writer.interface.flush();
-            // Free dynamically allocated responses (static string literals are not freeable)
-            if (response.len > 0 and response[0] == '[') {
-                allocator.free(response);
-            }
             line_len = 0;
         } else {
             if (line_len < line_buf.len) {
@@ -78,12 +84,15 @@ fn handleConnection(io: std.Io, database: db.Db, stream: *net.Stream) !void {
     }
 }
 
-fn processRequest(io: std.Io, database: db.Db, line: []const u8) ![]const u8 {
+fn processRequest(io: std.Io, database: db.Db, line: []const u8) !Response {
     // Simple JSON parsing: look for "method" field
-    const method = extractJsonString(line, "method") orelse return "{\"error\":\"missing method\"}\n";
+    const method = json.extractJsonString(line, "method") orelse return .{
+        .data = "{\"error\":\"missing method\"}\n",
+        .allocated = false,
+    };
 
     if (std.mem.eql(u8, method, "listTasks")) {
-        const show_all = extractJsonBool(line, "showAll") orelse false;
+        const show_all = json.extractJsonBool(line, "showAll") orelse false;
         var tasks = try db.queryTasks(database, show_all, allocator);
         defer {
             for (tasks.items) |task| {
@@ -94,89 +103,43 @@ fn processRequest(io: std.Io, database: db.Db, line: []const u8) ![]const u8 {
             tasks.deinit(allocator);
         }
 
-        // Build JSON response
-        var resp = std.ArrayList(u8).empty;
-        defer resp.deinit(allocator);
-        try resp.appendSlice(allocator, "[");
-        for (tasks.items, 0..) |task, i| {
-            if (i > 0) try resp.appendSlice(allocator, ",");
-            try resp.appendSlice(allocator, "{\"id\":\"");
-            try resp.appendSlice(allocator, task.id);
-            try resp.appendSlice(allocator, "\",\"title\":\"");
-            try appendEscaped(&resp, task.title);
-            try resp.appendSlice(allocator, "\",\"status\":\"");
-            try resp.appendSlice(allocator, task.status);
-            try resp.appendSlice(allocator, "\"}");
-        }
-        try resp.appendSlice(allocator, "]\n");
-        return try allocator.dupe(u8, resp.items);
+        const data = try json.serializeTasksJson(tasks.items, allocator);
+        return .{ .data = data, .allocated = true };
     } else if (std.mem.eql(u8, method, "addTask")) {
-        const title = extractJsonString(line, "title") orelse return "{\"error\":\"missing title\"}\n";
-        db.addTask(database, title) catch return "{\"error\":\"addTask failed\"}\n";
-        return "{\"ok\":true}\n";
+        const title = json.extractJsonString(line, "title") orelse return .{
+            .data = "{\"error\":\"missing title\"}\n",
+            .allocated = false,
+        };
+        db.addTask(database, title) catch return .{
+            .data = "{\"error\":\"addTask failed\"}\n",
+            .allocated = false,
+        };
+        return .{ .data = "{\"ok\":true}\n", .allocated = false };
     } else if (std.mem.eql(u8, method, "complete")) {
-        const id = extractJsonString(line, "id") orelse return "{\"error\":\"missing id\"}\n";
-        db.changeCompletionStatus(io, database, id, true) catch return "{\"error\":\"complete failed\"}\n";
-        return "{\"ok\":true}\n";
+        const id = json.extractJsonString(line, "id") orelse return .{
+            .data = "{\"error\":\"missing id\"}\n",
+            .allocated = false,
+        };
+        db.changeCompletionStatus(io, database, id, true) catch return .{
+            .data = "{\"error\":\"complete failed\"}\n",
+            .allocated = false,
+        };
+        return .{ .data = "{\"ok\":true}\n", .allocated = false };
     } else if (std.mem.eql(u8, method, "incomplete")) {
-        const id = extractJsonString(line, "id") orelse return "{\"error\":\"missing id\"}\n";
-        db.changeCompletionStatus(io, database, id, false) catch return "{\"error\":\"incomplete failed\"}\n";
-        return "{\"ok\":true}\n";
+        const id = json.extractJsonString(line, "id") orelse return .{
+            .data = "{\"error\":\"missing id\"}\n",
+            .allocated = false,
+        };
+        db.changeCompletionStatus(io, database, id, false) catch return .{
+            .data = "{\"error\":\"incomplete failed\"}\n",
+            .allocated = false,
+        };
+        return .{ .data = "{\"ok\":true}\n", .allocated = false };
     } else if (std.mem.eql(u8, method, "shutdown")) {
-        return "{\"ok\":\"shutting down\"}\n";
+        return .{ .data = "{\"ok\":\"shutting down\"}\n", .allocated = false };
+    } else if (std.mem.eql(u8, method, "syncStatus") or std.mem.eql(u8, method, "syncTasks")) {
+        return .{ .data = "{\"error\":\"sync requires both local and remote databases; use CLI sync command\"}\n", .allocated = false };
     }
 
-    return "{\"error\":\"unknown method\"}\n";
-}
-
-fn appendEscaped(list: *std.ArrayList(u8), s: []const u8) !void {
-    for (s) |ch| {
-        switch (ch) {
-            '"' => try list.appendSlice(allocator, "\\\""),
-            '\\' => try list.appendSlice(allocator, "\\\\"),
-            '\n' => try list.appendSlice(allocator, "\\n"),
-            else => try list.append(allocator, ch),
-        }
-    }
-}
-
-// Minimal JSON string extractor: finds "key":"value" pattern
-fn extractJsonString(json: []const u8, key: []const u8) ?[]const u8 {
-    // Search for "key":"
-    var i: usize = 0;
-    while (i + key.len + 4 < json.len) : (i += 1) {
-        if (json[i] == '"' and i + 1 + key.len < json.len and
-            std.mem.eql(u8, json[i + 1 .. i + 1 + key.len], key) and
-            json[i + 1 + key.len] == '"')
-        {
-            // Found key, now find value after :"
-            var j = i + 1 + key.len + 1; // past closing quote
-            // Skip : and whitespace
-            while (j < json.len and (json[j] == ':' or json[j] == ' ')) : (j += 1) {}
-            if (j < json.len and json[j] == '"') {
-                j += 1; // past opening quote of value
-                const start = j;
-                while (j < json.len and json[j] != '"') : (j += 1) {}
-                return json[start..j];
-            }
-        }
-    }
-    return null;
-}
-
-// Minimal JSON bool extractor: finds "key":true/false pattern
-fn extractJsonBool(json: []const u8, key: []const u8) ?bool {
-    var i: usize = 0;
-    while (i + key.len + 4 < json.len) : (i += 1) {
-        if (json[i] == '"' and i + 1 + key.len < json.len and
-            std.mem.eql(u8, json[i + 1 .. i + 1 + key.len], key) and
-            json[i + 1 + key.len] == '"')
-        {
-            var j = i + 1 + key.len + 1;
-            while (j < json.len and (json[j] == ':' or json[j] == ' ')) : (j += 1) {}
-            if (j + 4 <= json.len and std.mem.eql(u8, json[j .. j + 4], "true")) return true;
-            if (j + 5 <= json.len and std.mem.eql(u8, json[j .. j + 5], "false")) return false;
-        }
-    }
-    return null;
+    return .{ .data = "{\"error\":\"unknown method\"}\n", .allocated = false };
 }
