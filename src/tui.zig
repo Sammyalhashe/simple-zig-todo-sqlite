@@ -46,6 +46,7 @@ pub fn run(io: std.Io, database: db.Db, showAll: bool) !void {
     var cursor: usize = 0;
     var scroll_offset: usize = 0;
     var quit = false;
+    var cancelled = false;
 
     while (!quit) {
         draw(states.items, cursor, &scroll_offset);
@@ -67,24 +68,30 @@ pub fn run(io: std.Io, database: db.Db, showAll: bool) !void {
                 state.changed = !std.mem.eql(u8, state.task.status, state.original_status);
             },
             'q' => quit = true,
+            27 => {
+                cancelled = true;
+                quit = true;
+            },
             else => {},
         }
     }
 
-    var changed_count: usize = 0;
-    for (states.items) |state| {
-        if (state.changed) {
-            const complete = std.mem.eql(u8, state.task.status, "completed");
-            db.changeCompletionStatusNoIo(database, state.task.id, complete) catch {
-                std.debug.print("Error updating task {s}.\n", .{state.task.id});
-                continue;
-            };
-            changed_count += 1;
+    if (!cancelled) {
+        var changed_count: usize = 0;
+        for (states.items) |state| {
+            if (state.changed) {
+                const complete = std.mem.eql(u8, state.task.status, "completed");
+                db.changeCompletionStatusNoIo(database, state.task.id, complete) catch {
+                    std.debug.print("Error updating task {s}.\n", .{state.task.id});
+                    continue;
+                };
+                changed_count += 1;
+            }
         }
-    }
 
-    if (changed_count > 0) {
-        std.debug.print("Updated {d} task(s).\n", .{changed_count});
+        if (changed_count > 0) {
+            std.debug.print("Updated {d} task(s).\n", .{changed_count});
+        }
     }
 
     _ = io;
@@ -103,7 +110,7 @@ fn draw(states: []const TaskState, cursor: usize, scroll_offset: *usize) void {
     }
 
     _ = c.attron(c.A_BOLD);
-    _ = c.mvprintw(0, 0, " Todo List (j/k: move, Enter/Space: toggle, q: save & quit)");
+    _ = c.mvprintw(0, 0, " Todo List (j/k: move, Enter/Space: toggle, q: save & quit, Esc: cancel)");
     _ = c.attroff(c.A_BOLD);
     _ = c.mvprintw(1, 0, "-----------------------------------------------------------");
 

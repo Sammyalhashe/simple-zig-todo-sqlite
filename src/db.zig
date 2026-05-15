@@ -91,9 +91,9 @@ pub fn queryTasks(db: Db, showAll: bool, allocator: std.mem.Allocator) !std.Arra
         .sqlite => |s| {
             var stmt: ?*c.sqlite3_stmt = null;
             const sql = if (showAll)
-                "SELECT id, title, status FROM tasks ORDER BY last_modified DESC;"
+                "SELECT id, title, status FROM tasks WHERE is_deleted != 'Y' ORDER BY last_modified DESC;"
             else
-                "SELECT id, title, status FROM tasks WHERE status != 'completed' ORDER BY last_modified DESC;";
+                "SELECT id, title, status FROM tasks WHERE is_deleted != 'Y' AND status != 'completed' ORDER BY last_modified DESC;";
             const rc = c.sqlite3_prepare_v2(s, sql, @intCast(sql.len + 1), &stmt, null);
             try checkError(rc, s);
             defer _ = c.sqlite3_finalize(stmt);
@@ -180,7 +180,7 @@ pub fn listTasks(io: std.Io, db: Db, showAll: bool) !void {
 fn validateIdStr(id_str: []const u8) !void {
     if (id_str.len == 0 or id_str.len > 255) return error.SqlError;
     for (id_str) |ch| {
-        if (ch == '\'' or ch == ';' or ch == '-' or ch == '\\' or ch == '"') {
+        if (ch == '\'' or ch == ';' or ch == '\\' or ch == '"') {
             std.debug.print("Error: invalid character in task ID.\n", .{});
             return error.SqlError;
         }
@@ -211,7 +211,7 @@ pub fn changeCompletionStatusNoIo(db: Db, id_str: []const u8, complete: bool) !v
         .mariadb => |m| {
             try validateIdStr(id_str);
             const completed_time_expr: []const u8 = if (complete) "UNIX_TIMESTAMP()" else "NULL";
-            const query = try std.fmt.allocPrint(std.heap.page_allocator, "UPDATE supernotedb.t_schedule_task SET status = '{s}', completed_time = {s} WHERE task_id = '{s}';", .{
+            const query = try std.fmt.allocPrint(std.heap.page_allocator, "UPDATE supernotedb.t_schedule_task SET status = '{s}', completed_time = {s}, last_modified = UNIX_TIMESTAMP() WHERE task_id = '{s}';", .{
                 if (complete) "completed" else "needsAction",
                 completed_time_expr,
                 id_str,

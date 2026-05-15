@@ -56,17 +56,58 @@ pub fn main(init: std.process.Init) !void {
         return;
     };
 
+    if (std.mem.eql(u8, firstArg, "--help") or std.mem.eql(u8, firstArg, "-h")) {
+        std.debug.print(
+            \\Usage: todo [flags] <command> [args]
+            \\
+            \\Commands:
+            \\  add <description>     Add a new task
+            \\  list [--all] [--json] [-i]  List tasks (default: incomplete only)
+            \\  complete <id>         Mark task as completed
+            \\  incomplete <id>       Mark task as incomplete
+            \\  serve                 Start JSON-RPC daemon on Unix socket
+            \\  interactive           Interactive TUI mode (alias for list -i)
+            \\
+            \\Flags:
+            \\  -r, --remote <host>   Remote MariaDB host (via SSH tunnel)
+            \\  -p, --password <pw>   Password for remote connection
+            \\  -h, --help            Show this help
+            \\
+        , .{});
+        return;
+    }
+
     var commandAndArgs: std.ArrayList(CmdPair) = std.ArrayList(CmdPair).empty;
     if (std.mem.eql(u8, firstArg, "add")) {
-        const other = argsIter.next() orelse {
+        var parts: std.ArrayList([]const u8) = .empty;
+        while (argsIter.next()) |word| {
+            try parts.append(init.arena.allocator(), word);
+        }
+        if (parts.items.len == 0) {
             std.debug.print("Missing description for '{s}'.\n", .{firstArg});
             return;
-        };
+        }
+        // Join all parts with spaces
+        var totalLen: usize = 0;
+        for (parts.items, 0..) |part, i| {
+            totalLen += part.len;
+            if (i < parts.items.len - 1) totalLen += 1;
+        }
+        const joined = try init.arena.allocator().alloc(u8, totalLen);
+        var pos: usize = 0;
+        for (parts.items, 0..) |part, i| {
+            @memcpy(joined[pos..][0..part.len], part);
+            pos += part.len;
+            if (i < parts.items.len - 1) {
+                joined[pos] = ' ';
+                pos += 1;
+            }
+        }
         var cmdPair: CmdPair = .{
             .d_args = Args.empty,
             .d_cmd = firstArg,
         };
-        try cmdPair.d_args.?.append(init.arena.allocator(), other);
+        try cmdPair.d_args.?.append(init.arena.allocator(), joined);
         try commandAndArgs.append(init.arena.allocator(), cmdPair);
     } else if (std.mem.eql(u8, firstArg, "complete")) {
         const other = argsIter.next() orelse {
@@ -134,6 +175,25 @@ pub fn main(init: std.process.Init) !void {
                     } else {
                         startupOptions.d_remoteOptions = .{ .d_dbUri = "", .d_password = password };
                     }
+                } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+                    std.debug.print(
+                        \\Usage: todo [flags] <command> [args]
+                        \\
+                        \\Commands:
+                        \\  add <description>     Add a new task
+                        \\  list [--all] [--json] [-i]  List tasks (default: incomplete only)
+                        \\  complete <id>         Mark task as completed
+                        \\  incomplete <id>       Mark task as incomplete
+                        \\  serve                 Start JSON-RPC daemon on Unix socket
+                        \\  interactive           Interactive TUI mode (alias for list -i)
+                        \\
+                        \\Flags:
+                        \\  -r, --remote <host>   Remote MariaDB host (via SSH tunnel)
+                        \\  -p, --password <pw>   Password for remote connection
+                        \\  -h, --help            Show this help
+                        \\
+                    , .{});
+                    return;
                 }
             } else {
                 const cmdPair: CmdPair = .{
