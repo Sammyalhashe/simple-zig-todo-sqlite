@@ -22,24 +22,22 @@ const StartupOption = struct {
     d_remoteOptions: ?RemoteOptions = null,
 };
 
-fn parseFlags(startupOptions: *StartupOption, argsIter: *Iterator) bool {
-    const flag = argsIter.*.next() orelse return false;
-    if (flag[0] != '-') return false;
-
-    switch (flag[1]) {
-        'r' => {
-            startupOptions.*.d_local = false;
-            startupOptions.*.d_remoteOptions = .{
-                .d_dbUri = argsIter.next() orelse {
-                    std.debug.print("Usage: -r <dbUri>\n", .{});
-                    return false;
-                },
-            };
-        },
-        else => return false,
+fn printJsonEscaped(s: []const u8) void {
+    for (s) |ch| {
+        switch (ch) {
+            '"' => std.debug.print("\\\"", .{}),
+            '\\' => std.debug.print("\\\\", .{}),
+            '\n' => std.debug.print("\\n", .{}),
+            '\t' => std.debug.print("\\t", .{}),
+            else => {
+                if (ch < 0x20) {
+                    std.debug.print("\\u{x:0>4}", .{ch});
+                } else {
+                    std.debug.print("{c}", .{ch});
+                }
+            },
+        }
     }
-
-    return true;
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -223,7 +221,13 @@ pub fn main(init: std.process.Init) !void {
                 std.debug.print("[", .{});
                 for (tasks.items, 0..) |task, i| {
                     if (i > 0) std.debug.print(",", .{});
-                    std.debug.print("{{\"id\":\"{s}\",\"title\":\"{s}\",\"status\":\"{s}\"}}", .{ task.id, task.title, task.status });
+                    std.debug.print("{{\"id\":\"", .{});
+                    printJsonEscaped(task.id);
+                    std.debug.print("\",\"title\":\"", .{});
+                    printJsonEscaped(task.title);
+                    std.debug.print("\",\"status\":\"", .{});
+                    printJsonEscaped(task.status);
+                    std.debug.print("\"}}", .{});
                 }
                 std.debug.print("]\n", .{});
             } else {

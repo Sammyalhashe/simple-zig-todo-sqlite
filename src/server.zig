@@ -48,15 +48,31 @@ fn handleConnection(io: std.Io, database: db.Db, stream: *net.Stream) !void {
         if (n == 0) return;
 
         if (chunk[0] == '\n') {
-            // Process complete line
             const response = processRequest(database, line_buf[0..line_len]) catch "{\"error\":\"internal error\"}\n";
             try writer.interface.writeAll(response);
             try writer.interface.flush();
+            // Free dynamically allocated responses (static string literals are not freeable)
+            if (response.len > 0 and response[0] == '[') {
+                allocator.free(response);
+            }
             line_len = 0;
         } else {
             if (line_len < line_buf.len) {
                 line_buf[line_len] = chunk[0];
                 line_len += 1;
+            } else {
+                // Buffer overflow — discard line and send error
+                try writer.interface.writeAll("{\"error\":\"request too large\"}\n");
+                try writer.interface.flush();
+                line_len = 0;
+                // Drain until newline
+                while (true) {
+                    var drain: [1]u8 = undefined;
+                    var drain_slice: [1][]u8 = .{&drain};
+                    const dn = reader.interface.readVec(&drain_slice) catch return;
+                    if (dn == 0) return;
+                    if (drain[0] == '\n') break;
+                }
             }
         }
     }

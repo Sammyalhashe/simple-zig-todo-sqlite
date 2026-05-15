@@ -16,8 +16,12 @@ pub const Db = union(enum) {
 
 fn checkError(rc: c_int, db: ?*c.sqlite3) !void {
     if (rc != c.SQLITE_OK) {
-        const msg = std.mem.span(c.sqlite3_errmsg(db.?));
-        std.debug.print("SQLite error: {s}\n", .{msg});
+        if (db) |d| {
+            const msg = std.mem.span(c.sqlite3_errmsg(d));
+            std.debug.print("SQLite error: {s}\n", .{msg});
+        } else {
+            std.debug.print("SQLite error: (null db handle)\n", .{});
+        }
         return SqlError.SqlError;
     }
 }
@@ -25,15 +29,18 @@ fn checkError(rc: c_int, db: ?*c.sqlite3) !void {
 pub fn initDb(dbPath: []const u8) !*c.sqlite3 {
     var db: ?*c.sqlite3 = null;
     const rc = c.sqlite3_open(dbPath.ptr, &db);
+    errdefer {
+        if (db) |d| _ = c.sqlite3_close(d);
+    }
     try checkError(rc, db);
 
     const createTable = "CREATE TABLE IF NOT EXISTS tasks (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  title TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT 'needsAction',\n  last_modified INTEGER NOT NULL DEFAULT (strftime('%s','now')),\n  is_deleted TEXT NOT NULL DEFAULT 'N',\n  completed_time INTEGER\n)";
     var errMsg: [*c]u8 = undefined;
     const rc2 = c.sqlite3_exec(db, createTable, null, null, &errMsg);
     if (rc2 != c.SQLITE_OK) {
-        const msg = if (errMsg != 0) std.mem.span(errMsg) else "unknown error";
+        const msg = if (errMsg) |e| std.mem.span(e) else "unknown error";
         std.debug.print("SQLite exec error: {s}\n", .{msg});
-        if (errMsg != 0) c.sqlite3_free(errMsg);
+        if (errMsg) |e| c.sqlite3_free(e);
         return SqlError.SqlError;
     }
     return db.?;
@@ -96,9 +103,9 @@ pub fn queryTasks(db: Db, showAll: bool, allocator: std.mem.Allocator) !std.Arra
                 if (step == c.SQLITE_ROW) {
                     const id = c.sqlite3_column_int(stmt, 0);
                     const titlePtr = c.sqlite3_column_text(stmt, 1);
-                    const title = std.mem.span(titlePtr);
+                    const title = if (titlePtr) |p| std.mem.span(p) else "(no title)";
                     const statusPtr = c.sqlite3_column_text(stmt, 2);
-                    const status = std.mem.span(statusPtr);
+                    const status = if (statusPtr) |p| std.mem.span(p) else "";
 
                     var id_buf: [20]u8 = undefined;
                     const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{id}) catch "?";
@@ -170,12 +177,25 @@ pub fn listTasks(io: std.Io, db: Db, showAll: bool) !void {
     }
 }
 
+fn validateIdStr(id_str: []const u8) !void {
+    if (id_str.len == 0 or id_str.len > 255) return error.SqlError;
+    for (id_str) |ch| {
+        if (ch == '\'' or ch == ';' or ch == '-' or ch == '\\' or ch == '"') {
+            std.debug.print("Error: invalid character in task ID.\n", .{});
+            return error.SqlError;
+        }
+    }
+}
+
 pub fn changeCompletionStatusNoIo(db: Db, id_str: []const u8, complete: bool) !void {
     switch (db) {
         .sqlite => |s| {
             const id = try std.fmt.parseInt(i64, id_str, 10);
             var stmt: ?*c.sqlite3_stmt = null;
-            const sql = "UPDATE tasks SET status = ?, completed_time = CAST(strftime('%s','now') AS INTEGER), last_modified = CAST(strftime('%s','now') AS INTEGER) WHERE id = ?;";
+            const sql = if (complete)
+                "UPDATE tasks SET status = ?, completed_time = CAST(strftime('%s','now') AS INTEGER), last_modified = CAST(strftime('%s','now') AS INTEGER) WHERE id = ?;"
+            else
+                "UPDATE tasks SET status = ?, completed_time = NULL, last_modified = CAST(strftime('%s','now') AS INTEGER) WHERE id = ?;";
             const rc = c.sqlite3_prepare_v2(s, sql, @intCast(sql.len + 1), &stmt, null);
             try checkError(rc, s);
             defer _ = c.sqlite3_finalize(stmt);
@@ -189,8 +209,11 @@ pub fn changeCompletionStatusNoIo(db: Db, id_str: []const u8, complete: bool) !v
             }
         },
         .mariadb => |m| {
-            const query = try std.fmt.allocPrint(std.heap.page_allocator, "UPDATE supernotedb.t_schedule_task SET status = '{s}', completed_time = UNIX_TIMESTAMP() WHERE task_id = '{s}';", .{
+            try validateIdStr(id_str);
+            const completed_time_expr: []const u8 = if (complete) "UNIX_TIMESTAMP()" else "NULL";
+            const query = try std.fmt.allocPrint(std.heap.page_allocator, "UPDATE supernotedb.t_schedule_task SET status = '{s}', completed_time = {s} WHERE task_id = '{s}';", .{
                 if (complete) "completed" else "needsAction",
+                completed_time_expr,
                 id_str,
             });
             defer std.heap.page_allocator.free(query);
@@ -229,11 +252,18 @@ pub fn changeCompletionStatus(io: std.Io, db: Db, id_str: []const u8, complete: 
             }
         },
         .mariadb => |m| {
+            try validateIdStr(id_str);
             const ts = std.Io.Timestamp.now(io, .real);
             const seconds = @as(u64, @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_s)));
-            const query = try std.fmt.allocPrint(std.heap.page_allocator, "UPDATE supernotedb.t_schedule_task SET status = '{s}', completed_time = {d} WHERE task_id = '{s}';", .{
+            const completed_time_expr = if (complete)
+                try std.fmt.allocPrint(std.heap.page_allocator, "{d}", .{seconds})
+            else
+                try std.fmt.allocPrint(std.heap.page_allocator, "NULL", .{});
+            defer std.heap.page_allocator.free(completed_time_expr);
+
+            const query = try std.fmt.allocPrint(std.heap.page_allocator, "UPDATE supernotedb.t_schedule_task SET status = '{s}', completed_time = {s} WHERE task_id = '{s}';", .{
                 if (complete) "completed" else "needsAction",
-                seconds,
+                completed_time_expr,
                 id_str,
             });
             defer std.heap.page_allocator.free(query);
