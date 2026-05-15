@@ -22,22 +22,47 @@ const StartupOption = struct {
     d_remoteOptions: ?RemoteOptions = null,
 };
 
-fn printJsonEscaped(s: []const u8) void {
+fn writeJsonEscaped(w: *std.Io.Writer, s: []const u8) std.Io.Writer.Error!void {
     for (s) |ch| {
         switch (ch) {
-            '"' => std.debug.print("\\\"", .{}),
-            '\\' => std.debug.print("\\\\", .{}),
-            '\n' => std.debug.print("\\n", .{}),
-            '\t' => std.debug.print("\\t", .{}),
+            '"' => try w.writeAll("\\\""),
+            '\\' => try w.writeAll("\\\\"),
+            '\n' => try w.writeAll("\\n"),
+            '\t' => try w.writeAll("\\t"),
             else => {
                 if (ch < 0x20) {
-                    std.debug.print("\\u{x:0>4}", .{ch});
+                    try w.print("\\u{x:0>4}", .{ch});
                 } else {
-                    std.debug.print("{c}", .{ch});
+                    try w.print("{c}", .{ch});
                 }
             },
         }
     }
+}
+
+fn stdoutWrite(io: std.Io, data: []const u8) void {
+    std.Io.File.stdout().writeStreamingAll(io, data) catch {};
+}
+
+fn printHelp(io: std.Io) void {
+    const help =
+        \\Usage: todo [flags] <command> [args]
+        \\
+        \\Commands:
+        \\  add <description>     Add a new task
+        \\  list [--all] [--json] [-i]  List tasks (default: incomplete only)
+        \\  complete <id>         Mark task as completed
+        \\  incomplete <id>       Mark task as incomplete
+        \\  serve                 Start JSON-RPC daemon on Unix socket
+        \\  interactive           Interactive TUI mode (alias for list -i)
+        \\
+        \\Flags:
+        \\  -r, --remote <host>   Remote MariaDB host (via SSH tunnel)
+        \\  -p, --password <pw>   Password for remote connection
+        \\  -h, --help            Show this help
+        \\
+    ;
+    stdoutWrite(io, help);
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -57,23 +82,7 @@ pub fn main(init: std.process.Init) !void {
     };
 
     if (std.mem.eql(u8, firstArg, "--help") or std.mem.eql(u8, firstArg, "-h")) {
-        std.debug.print(
-            \\Usage: todo [flags] <command> [args]
-            \\
-            \\Commands:
-            \\  add <description>     Add a new task
-            \\  list [--all] [--json] [-i]  List tasks (default: incomplete only)
-            \\  complete <id>         Mark task as completed
-            \\  incomplete <id>       Mark task as incomplete
-            \\  serve                 Start JSON-RPC daemon on Unix socket
-            \\  interactive           Interactive TUI mode (alias for list -i)
-            \\
-            \\Flags:
-            \\  -r, --remote <host>   Remote MariaDB host (via SSH tunnel)
-            \\  -p, --password <pw>   Password for remote connection
-            \\  -h, --help            Show this help
-            \\
-        , .{});
+        printHelp(io);
         return;
     }
 
@@ -176,23 +185,7 @@ pub fn main(init: std.process.Init) !void {
                         startupOptions.d_remoteOptions = .{ .d_dbUri = "", .d_password = password };
                     }
                 } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-                    std.debug.print(
-                        \\Usage: todo [flags] <command> [args]
-                        \\
-                        \\Commands:
-                        \\  add <description>     Add a new task
-                        \\  list [--all] [--json] [-i]  List tasks (default: incomplete only)
-                        \\  complete <id>         Mark task as completed
-                        \\  incomplete <id>       Mark task as incomplete
-                        \\  serve                 Start JSON-RPC daemon on Unix socket
-                        \\  interactive           Interactive TUI mode (alias for list -i)
-                        \\
-                        \\Flags:
-                        \\  -r, --remote <host>   Remote MariaDB host (via SSH tunnel)
-                        \\  -p, --password <pw>   Password for remote connection
-                        \\  -h, --help            Show this help
-                        \\
-                    , .{});
+                    printHelp(io);
                     return;
                 }
             } else {
@@ -278,18 +271,21 @@ pub fn main(init: std.process.Init) !void {
                     std.debug.print("Error: failed to query tasks.\n", .{});
                     continue;
                 };
-                std.debug.print("[", .{});
+                var stdout_buf: [8192]u8 = undefined;
+                var w = std.Io.File.stdout().writer(io, &stdout_buf);
+                w.interface.writeAll("[") catch {};
                 for (tasks.items, 0..) |task, i| {
-                    if (i > 0) std.debug.print(",", .{});
-                    std.debug.print("{{\"id\":\"", .{});
-                    printJsonEscaped(task.id);
-                    std.debug.print("\",\"title\":\"", .{});
-                    printJsonEscaped(task.title);
-                    std.debug.print("\",\"status\":\"", .{});
-                    printJsonEscaped(task.status);
-                    std.debug.print("\"}}", .{});
+                    if (i > 0) w.interface.writeAll(",") catch {};
+                    w.interface.writeAll("{\"id\":\"") catch {};
+                    writeJsonEscaped(&w.interface, task.id) catch {};
+                    w.interface.writeAll("\",\"title\":\"") catch {};
+                    writeJsonEscaped(&w.interface, task.title) catch {};
+                    w.interface.writeAll("\",\"status\":\"") catch {};
+                    writeJsonEscaped(&w.interface, task.status) catch {};
+                    w.interface.writeAll("\"}") catch {};
                 }
-                std.debug.print("]\n", .{});
+                w.interface.writeAll("]\n") catch {};
+                w.interface.flush() catch {};
             } else {
                 db.listTasks(io, database, showAll) catch {
                     std.debug.print("Error: failed to list tasks.\n", .{});

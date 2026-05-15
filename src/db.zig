@@ -155,7 +155,6 @@ pub fn queryTasks(db: Db, showAll: bool, allocator: std.mem.Allocator) !std.Arra
 }
 
 pub fn listTasks(io: std.Io, db: Db, showAll: bool) !void {
-    _ = io;
     const allocator = std.heap.page_allocator;
     var tasks = try queryTasks(db, showAll, allocator);
     defer {
@@ -167,14 +166,17 @@ pub fn listTasks(io: std.Io, db: Db, showAll: bool) !void {
         tasks.deinit(allocator);
     }
 
+    var stdout_buf: [4096]u8 = undefined;
+    var w = std.Io.File.stdout().writer(io, &stdout_buf);
     for (tasks.items) |task| {
         const completed = std.mem.eql(u8, task.status, "completed");
-        std.debug.print("{s}. [{s}] {s}\n", .{
+        w.interface.print("{s}. [{s}] {s}\n", .{
             task.id,
             if (completed) "x" else " ",
             task.title,
-        });
+        }) catch {};
     }
+    w.interface.flush() catch {};
 }
 
 fn validateIdStr(id_str: []const u8) !void {
