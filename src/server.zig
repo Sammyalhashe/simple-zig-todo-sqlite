@@ -48,7 +48,7 @@ fn handleConnection(io: std.Io, database: db.Db, stream: *net.Stream) !void {
         if (n == 0) return;
 
         if (chunk[0] == '\n') {
-            const response = processRequest(database, line_buf[0..line_len]) catch "{\"error\":\"internal error\"}\n";
+            const response = processRequest(io, database, line_buf[0..line_len]) catch "{\"error\":\"internal error\"}\n";
             try writer.interface.writeAll(response);
             try writer.interface.flush();
             // Free dynamically allocated responses (static string literals are not freeable)
@@ -78,7 +78,7 @@ fn handleConnection(io: std.Io, database: db.Db, stream: *net.Stream) !void {
     }
 }
 
-fn processRequest(database: db.Db, line: []const u8) ![]const u8 {
+fn processRequest(io: std.Io, database: db.Db, line: []const u8) ![]const u8 {
     // Simple JSON parsing: look for "method" field
     const method = extractJsonString(line, "method") orelse return "{\"error\":\"missing method\"}\n";
 
@@ -116,12 +116,11 @@ fn processRequest(database: db.Db, line: []const u8) ![]const u8 {
         return "{\"ok\":true}\n";
     } else if (std.mem.eql(u8, method, "complete")) {
         const id = extractJsonString(line, "id") orelse return "{\"error\":\"missing id\"}\n";
-        // changeCompletionStatus needs io for timestamps — use a fallback
-        _ = db.changeCompletionStatusNoIo(database, id, true) catch return "{\"error\":\"complete failed\"}\n";
+        db.changeCompletionStatus(io, database, id, true) catch return "{\"error\":\"complete failed\"}\n";
         return "{\"ok\":true}\n";
     } else if (std.mem.eql(u8, method, "incomplete")) {
         const id = extractJsonString(line, "id") orelse return "{\"error\":\"missing id\"}\n";
-        _ = db.changeCompletionStatusNoIo(database, id, false) catch return "{\"error\":\"incomplete failed\"}\n";
+        db.changeCompletionStatus(io, database, id, false) catch return "{\"error\":\"incomplete failed\"}\n";
         return "{\"ok\":true}\n";
     } else if (std.mem.eql(u8, method, "shutdown")) {
         return "{\"ok\":\"shutting down\"}\n";

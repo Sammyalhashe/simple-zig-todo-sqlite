@@ -187,45 +187,6 @@ fn validateIdStr(id_str: []const u8) !void {
     }
 }
 
-pub fn changeCompletionStatusNoIo(db: Db, id_str: []const u8, complete: bool) !void {
-    switch (db) {
-        .sqlite => |s| {
-            const id = try std.fmt.parseInt(i64, id_str, 10);
-            var stmt: ?*c.sqlite3_stmt = null;
-            const sql = if (complete)
-                "UPDATE tasks SET status = ?, completed_time = CAST(strftime('%s','now') AS INTEGER), last_modified = CAST(strftime('%s','now') AS INTEGER) WHERE id = ?;"
-            else
-                "UPDATE tasks SET status = ?, completed_time = NULL, last_modified = CAST(strftime('%s','now') AS INTEGER) WHERE id = ?;";
-            const rc = c.sqlite3_prepare_v2(s, sql, @intCast(sql.len + 1), &stmt, null);
-            try checkError(rc, s);
-            defer _ = c.sqlite3_finalize(stmt);
-
-            const statusVal: []const u8 = if (complete) "completed" else "needsAction";
-            _ = c.sqlite3_bind_text(stmt, 1, statusVal.ptr, @intCast(statusVal.len), c.SQLITE_TRANSIENT);
-            _ = c.sqlite3_bind_int64(stmt, 2, id);
-            const rc2 = c.sqlite3_step(stmt);
-            if (rc2 != c.SQLITE_DONE) {
-                try checkError(rc2, s);
-            }
-        },
-        .mariadb => |m| {
-            try validateIdStr(id_str);
-            const completed_time_expr: []const u8 = if (complete) "UNIX_TIMESTAMP()" else "NULL";
-            const query = try std.fmt.allocPrint(std.heap.page_allocator, "UPDATE supernotedb.t_schedule_task SET status = '{s}', completed_time = {s}, last_modified = UNIX_TIMESTAMP() WHERE task_id = '{s}';", .{
-                if (complete) "completed" else "needsAction",
-                completed_time_expr,
-                id_str,
-            });
-            defer std.heap.page_allocator.free(query);
-
-            if (c.mysql_query(m, query.ptr) != 0) {
-                std.debug.print("MariaDB update error: {s}\n", .{c.mysql_error(m)});
-                return error.SqlError;
-            }
-        },
-    }
-}
-
 pub fn changeCompletionStatus(io: std.Io, db: Db, id_str: []const u8, complete: bool) !void {
     switch (db) {
         .sqlite => |s| {
@@ -261,7 +222,7 @@ pub fn changeCompletionStatus(io: std.Io, db: Db, id_str: []const u8, complete: 
                 try std.fmt.allocPrint(std.heap.page_allocator, "NULL", .{});
             defer std.heap.page_allocator.free(completed_time_expr);
 
-            const query = try std.fmt.allocPrint(std.heap.page_allocator, "UPDATE supernotedb.t_schedule_task SET status = '{s}', completed_time = {s} WHERE task_id = '{s}';", .{
+            const query = try std.fmt.allocPrint(std.heap.page_allocator, "UPDATE supernotedb.t_schedule_task SET status = '{s}', completed_time = {s}, last_modified = UNIX_TIMESTAMP() WHERE task_id = '{s}';", .{
                 if (complete) "completed" else "needsAction",
                 completed_time_expr,
                 id_str,

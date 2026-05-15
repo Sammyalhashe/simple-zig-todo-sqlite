@@ -81,7 +81,7 @@ pub fn run(io: std.Io, database: db.Db, showAll: bool) !void {
         for (states.items) |state| {
             if (state.changed) {
                 const complete = std.mem.eql(u8, state.task.status, "completed");
-                db.changeCompletionStatusNoIo(database, state.task.id, complete) catch {
+                db.changeCompletionStatus(io, database, state.task.id, complete) catch {
                     std.debug.print("Error updating task {s}.\n", .{state.task.id});
                     continue;
                 };
@@ -94,7 +94,6 @@ pub fn run(io: std.Io, database: db.Db, showAll: bool) !void {
         }
     }
 
-    _ = io;
 }
 
 fn draw(states: []const TaskState, cursor: usize, scroll_offset: *usize) void {
