@@ -18,8 +18,15 @@
         pkgs = import nixpkgs { inherit system; };
       in
       {
-        packages.default = import ./nix/package.nix { inherit pkgs; src = ./.; };
+        packages.default = import ./nix/package.nix {
+          inherit pkgs;
+          src = ./.;
+        };
         devShells.default = import ./nix/devshell.nix { inherit pkgs; };
+        apps.default = {
+          type = "app";
+          program = "${self.packages.${system}.default}/bin/todo";
+        };
       }
     ))
     // {
