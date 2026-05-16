@@ -11,6 +11,7 @@ const TaskState = struct {
 };
 
 pub fn run(io: std.Io, database: db.Db, showAll: bool) !void {
+    std.debug.print("INTERACTIVE::run", .{});
     var tasks = try db.queryTasks(database, showAll, allocator);
     defer {
         for (tasks.items) |task| {

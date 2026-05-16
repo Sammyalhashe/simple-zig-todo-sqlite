@@ -77,9 +77,13 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+
     exe.root_module.linkSystemLibrary("sqlite3", .{});
     exe.root_module.linkSystemLibrary("mysqlclient", .{});
     exe.root_module.linkSystemLibrary("ncurses", .{});
+
+    const yazap = b.dependency("yazap", .{});
+    exe.root_module.addImport("yazap", yazap.module("yazap"));
 
     b.installArtifact(exe);
 

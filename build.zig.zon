@@ -1,0 +1,12 @@
+.{
+    .name = .todo,
+    .fingerprint = 0x5a0eb6a06c98f1a0,
+    .version = "0.0.1",
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+    .dependencies = .{
+        .yazap = .{
+            .url = "git+https://github.com/prajwalch/yazap#82edda4aa180cc3aebf00b2c39a37975969eba0a",
+            .hash = "yazap-0.7.0-Z1t-EiT6AQDpbgaDQ1i_oBfnvmeH4AUM3WmiuTuXuQMN",
+        },
+    },
+}

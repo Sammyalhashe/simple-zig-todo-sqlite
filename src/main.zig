@@ -6,14 +6,12 @@ const server = @import("server");
 const sync = @import("sync");
 const tui = @import("tui");
 
-const Iterator = std.process.Args.Iterator;
+/// yazap
+const yazap = @import("yazap");
+const App = yazap.App;
+const Arg = yazap.Arg;
+const ArgMatches = yazap.ArgMatches;
 
-const Args = std.ArrayList([]const u8);
-
-const CmdPair = struct {
-    d_cmd: []const u8,
-    d_args: ?Args,
-};
 
 const RemoteOptions = struct {
     d_dbUri: []const u8,
@@ -25,377 +23,317 @@ const StartupOption = struct {
     d_remoteOptions: ?RemoteOptions = null,
 };
 
-fn joinWithSpaces(alloc: std.mem.Allocator, parts: []const []const u8) ![]u8 {
-    var totalLen: usize = 0;
-    for (parts, 0..) |part, i| {
-        totalLen += part.len;
-        if (i < parts.len - 1) totalLen += 1;
-    }
-    const joined = try alloc.alloc(u8, totalLen);
-    var pos: usize = 0;
-    for (parts, 0..) |part, i| {
-        @memcpy(joined[pos..][0..part.len], part);
-        pos += part.len;
-        if (i < parts.len - 1) {
-            joined[pos] = ' ';
-            pos += 1;
-        }
-    }
-    return joined;
-}
-
 fn stdoutWrite(io: std.Io, data: []const u8) void {
     std.Io.File.stdout().writeStreamingAll(io, data) catch {};
 }
 
-fn printHelp(io: std.Io) void {
-    const help =
-        \\Usage: todo [flags] <command> [args]
-        \\
-        \\Commands:
-        \\  add <description>     Add a new task
-        \\  list [--all] [--json] [-i]  List tasks (default: incomplete only)
-        \\  complete <id>         Mark task as completed
-        \\  incomplete <id>       Mark task as incomplete
-        \\  serve                 Start JSON-RPC daemon on Unix socket
-        \\  interactive           Interactive TUI mode (alias for list -i)
-        \\  sync [push|pull|both] [--dry-run]
-        \\                        Sync tasks between local SQLite and remote MariaDB
-        \\
-        \\Flags:
-        \\  -r, --remote <host>   Remote MariaDB host (via SSH tunnel)
-        \\  -p, --password <pw>   Password for remote connection
-        \\  -h, --help            Show this help
-        \\
-        \\Sync requires -r flag. Direction defaults to 'both' if omitted.
-        \\
-    ;
-    stdoutWrite(io, help);
+fn createDatabase(
+    io: std.Io,
+    remote: ?RemoteOptions,
+    tunnel_child: *std.process.Child,
+) db.Db {
+    if (remote) |rem| {
+        tunnel_child.* = std.process.spawn(io, .{
+            .argv = if (rem.d_password) |pw|
+                &[_][]const u8{ "sshpass", "-p", pw, "ssh", "-o", "StrictHostKeyChecking=no", "-N", "-L", "3307:127.0.0.1:3306", rem.d_dbUri }
+            else
+                &[_][]const u8{ "ssh", "-o", "StrictHostKeyChecking=no", "-N", "-L", "3307:127.0.0.1:3306", rem.d_dbUri },
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .inherit,
+        }) catch {
+            std.debug.print("Failed to spawn SSH tunnel.\n", .{});
+            return .{ .sqlite = undefined };
+        };
+        std.Io.sleep(io, .{ .nanoseconds = 2 * std.time.ns_per_s }, .real) catch {};
+        const mariadb = db.initMariaDb("127.0.0.1", 3307, rem.d_password) catch {
+            std.debug.print("Failed to connect to remote database.\n", .{});
+            return .{ .sqlite = undefined };
+        };
+        return .{ .mariadb = mariadb };
+    } else {
+        const sqlite = db.initDb("todo.db\x00") catch {
+            std.debug.print("Failed to open local database.\n", .{});
+            return .{ .sqlite = undefined };
+        };
+        return .{ .sqlite = sqlite };
+    }
+}
+
+fn addTaskCmd(database: db.Db, desc: []const u8) void {
+    db.addTask(database, desc) catch {
+        std.debug.print("Error: failed to add task.\n", .{});
+        return;
+    };
+    std.debug.print("Task added.\n", .{});
+}
+
+fn listCmd(
+    io: std.Io,
+    database: db.Db,
+    showAll: bool,
+    jsonOutput: bool,
+    interactive: bool,
+    arena: std.mem.Allocator,
+) void {
+    if (interactive) {
+        tui.run(io, database, showAll) catch {
+            std.debug.print("Error: interactive mode failed.\n", .{});
+        };
+    } else if (jsonOutput) {
+        const tasks = db.queryTasks(database, showAll, arena) catch {
+            std.debug.print("Error: failed to query tasks.\n", .{});
+            return;
+        };
+        const output = json.serializeTasksJson(tasks.items, arena) catch {
+            std.debug.print("Error: failed to serialize tasks.\n", .{});
+            return;
+        };
+        stdoutWrite(io, output);
+    } else {
+        db.listTasks(io, database, showAll) catch {
+            std.debug.print("Error: failed to list tasks.\n", .{});
+        };
+    }
+}
+
+fn interactiveCmd(io: std.Io, database: db.Db, showAll: bool) void {
+    tui.run(io, database, showAll) catch {
+        std.debug.print("Error: interactive mode failed.\n", .{});
+    };
+}
+
+fn completeCmd(io: std.Io, database: db.Db, idStr: []const u8) void {
+    db.changeCompletionStatus(io, database, idStr, true) catch {
+        std.debug.print("Error: failed to complete task {s}.\n", .{idStr});
+        return;
+    };
+    std.debug.print("Task {s} marked as completed.\n", .{idStr});
+}
+
+fn incompleteCmd(io: std.Io, database: db.Db, idStr: []const u8) void {
+    db.changeCompletionStatus(io, database, idStr, false) catch {
+        std.debug.print("Error: failed to mark task {s} as incomplete.\n", .{idStr});
+        return;
+    };
+    std.debug.print("Task {s} marked as incomplete.\n", .{idStr});
+}
+
+fn serveCmd(io: std.Io, database: db.Db) void {
+    const socket_path = "/tmp/todo.sock";
+    server.serve(io, database, socket_path) catch {
+        std.debug.print("Error: server failed.\n", .{});
+    };
+}
+
+fn runSync(
+    io: std.Io,
+    remote: RemoteOptions,
+    sync_matches: ArgMatches,
+    arena: std.mem.Allocator,
+) !void {
+    const local_sqlite = db.initDb("todo.db\x00") catch {
+        std.debug.print("Error: failed to open local database.\n", .{});
+        return;
+    };
+    defer _ = c.sqlite3_close(local_sqlite);
+
+    std.debug.print("Opening SSH tunnel to {s}...\n", .{remote.d_dbUri});
+
+    var argv: std.ArrayList([]const u8) = std.ArrayList([]const u8).empty;
+    if (remote.d_password) |pw| {
+        try argv.appendSlice(arena, &[_][]const u8{ "sshpass", "-p", pw });
+    }
+    try argv.appendSlice(arena, &[_][]const u8{
+        "ssh", "-o", "StrictHostKeyChecking=no", "-N", "-L", "3307:127.0.0.1:3306", remote.d_dbUri,
+    });
+
+    var tunnel_child = try std.process.spawn(io, .{
+        .argv = argv.items,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .inherit,
+    });
+    defer tunnel_child.kill(io);
+    std.Io.sleep(io, .{ .nanoseconds = 2 * std.time.ns_per_s }, .real) catch {};
+    const mariadb = db.initMariaDb("127.0.0.1", 3307, remote.d_password) catch {
+        std.debug.print("Error: failed to connect to remote database.\n", .{});
+        return;
+    };
+    defer c.mysql_close(mariadb);
+
+    var direction: sync.SyncDirection = .both;
+    const dry_run = sync_matches.containsArg("dry-run");
+
+    if (sync_matches.getSingleValue("direction")) |dirStr| {
+        if (std.mem.eql(u8, dirStr, "push")) {
+            direction = .push;
+        } else if (std.mem.eql(u8, dirStr, "pull")) {
+            direction = .pull;
+        } else if (std.mem.eql(u8, dirStr, "both")) {
+            direction = .both;
+        } else {
+            std.debug.print("Error: unknown sync direction '{s}'.\n", .{dirStr});
+            return;
+        }
+    }
+
+    _ = sync.syncTasks(io, local_sqlite, mariadb, direction, dry_run, arena) catch {
+        std.debug.print("Error: sync failed.\n", .{});
+    };
 }
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const args = init.minimal.args;
-    var argsIter = try std.process.Args.iterateAllocator(args, init.arena.allocator());
-    _ = argsIter.next(); // skip program name
+    // yazap init
+    var app = App.init(init.arena.allocator(), "todo", "Todo app that integrates with either local Sqlite db or remote Mariadb instance");
+    defer app.deinit();
 
+    // get the root yazap subcommand
+    var todo = app.rootCommand();
+    todo.setProperty(.help_on_empty_args);
+
+    // global flags/options
+    try todo.addArg(Arg.singleValueOption("remote", 'r', "remote of the MariaDB"));
+    try todo.addArg(Arg.singleValueOption("password", 'p', "password of the host where the MariaDB is hosted"));
+
+    // `todo add <description>`
+    var add_cmd = app.createCommand("add", "Add a task to the todo list");
+    try add_cmd.addArg(Arg.positional("description", "Task description", null));
+    try todo.addSubcommand(add_cmd);
+
+    // `todo list [OPTIONS]`
+    var list_cmd = app.createCommand("list", "List tasks. By default specifies all incomplete tasks. Use `-a` for all tasks.");
+    try list_cmd.addArg(Arg.booleanOption("all", 'a', "If given, list all tasks in database."));
+    try list_cmd.addArg(Arg.booleanOption("complete", 'c', "If given, list complete tasks in database."));
+    try list_cmd.addArg(Arg.booleanOption("interactive", 'i', "Interactive tui mode."));
+    try list_cmd.addArg(Arg.booleanOption("json", 'j', "Output tasks as JSON."));
+    try todo.addSubcommand(list_cmd);
+
+    // `todo interactive`
+    const interactive_cmd = app.createCommand("interactive", "Interactive tui mode. Alias for `todo list -i`.");
+    try todo.addSubcommand(interactive_cmd);
+
+    // `todo complete <task_id>`
+    var complete_cmd = app.createCommand("complete", "Complete a task given its `<task_id>`.");
+    try complete_cmd.addArg(Arg.positional("task_id", "Task ID of the task to complete", null));
+    try todo.addSubcommand(complete_cmd);
+
+    // `todo incomplete <task_id>`
+    var incomplete_cmd = app.createCommand("incomplete", "Mark a task as incomplete given its `<task_id>`.");
+    try incomplete_cmd.addArg(Arg.positional("task_id", "Task ID of the task to mark incomplete", null));
+    try todo.addSubcommand(incomplete_cmd);
+
+    // `todo serve`
+    const serve_cmd = app.createCommand("serve", "Start JSON-RPC daemon on Unix socket.");
+    try todo.addSubcommand(serve_cmd);
+
+    // `todo sync [push|pull|both] [--dry-run]`
+    var sync_cmd = app.createCommand("sync", "Sync the local/remote databases.");
+    try sync_cmd.addArg(Arg.positional("direction", "Sync direction: push, pull, or both", null));
+    try sync_cmd.addArg(Arg.booleanOption("dry-run", null, "Show what would be done without making changes"));
+    try todo.addSubcommand(sync_cmd);
+
+    // parse args
+    const matches = try app.parseProcess(io, args);
+
+    // startup options parsing
     var startupOptions = StartupOption{
         .d_local = true,
         .d_remoteOptions = null,
     };
 
-    const firstArg = argsIter.next() orelse {
-        std.debug.print("Usage: todo <add|list|complete> [args]\n", .{});
-        return;
-    };
-
-    if (std.mem.eql(u8, firstArg, "--help") or std.mem.eql(u8, firstArg, "-h")) {
-        printHelp(io);
-        return;
+    if (matches.getSingleValue("remote")) |remote| {
+        startupOptions.d_remoteOptions = .{ .d_dbUri = remote };
     }
 
-    var commandAndArgs: std.ArrayList(CmdPair) = std.ArrayList(CmdPair).empty;
-    if (std.mem.eql(u8, firstArg, "add")) {
-        var parts: std.ArrayList([]const u8) = .empty;
-        while (argsIter.next()) |word| {
-            try parts.append(init.arena.allocator(), word);
-        }
-        if (parts.items.len == 0) {
-            std.debug.print("Missing description for '{s}'.\n", .{firstArg});
-            return;
-        }
-        const joined = try joinWithSpaces(init.arena.allocator(), parts.items);
-        var cmdPair: CmdPair = .{
-            .d_args = Args.empty,
-            .d_cmd = firstArg,
-        };
-        try cmdPair.d_args.?.append(init.arena.allocator(), joined);
-        try commandAndArgs.append(init.arena.allocator(), cmdPair);
-    } else if (std.mem.eql(u8, firstArg, "complete")) {
-        const other = argsIter.next() orelse {
-            std.debug.print("Missing id for '{s}'.\n", .{firstArg});
-            return;
-        };
-        var cmdPair: CmdPair = .{
-            .d_args = Args.empty,
-            .d_cmd = firstArg,
-        };
-        try cmdPair.d_args.?.append(init.arena.allocator(), other);
-        try commandAndArgs.append(init.arena.allocator(), cmdPair);
-    } else if (std.mem.eql(u8, firstArg, "incomplete")) {
-        const other = argsIter.next() orelse {
-            std.debug.print("Missing id for '{s}'.\n", .{firstArg});
-            return;
-        };
-        var cmdPair: CmdPair = .{
-            .d_args = Args.empty,
-            .d_cmd = firstArg,
-        };
-        try cmdPair.d_args.?.append(init.arena.allocator(), other);
-        try commandAndArgs.append(init.arena.allocator(), cmdPair);
-    } else if (std.mem.eql(u8, firstArg, "list")) {
-        var cmdPair: CmdPair = .{
-            .d_args = Args.empty,
-            .d_cmd = firstArg,
-        };
-        // Check for --all, --json, -i flags
-        while (argsIter.next()) |nextArg| {
-            if (std.mem.eql(u8, nextArg, "--all") or std.mem.eql(u8, nextArg, "--json") or std.mem.eql(u8, nextArg, "-i")) {
-                try cmdPair.d_args.?.append(init.arena.allocator(), nextArg);
-            }
-        }
-        try commandAndArgs.append(init.arena.allocator(), cmdPair);
-    } else if (std.mem.eql(u8, firstArg, "serve")) {
-        const cmdPair: CmdPair = .{
-            .d_args = null,
-            .d_cmd = firstArg,
-        };
-        try commandAndArgs.append(init.arena.allocator(), cmdPair);
-    } else if (std.mem.eql(u8, firstArg, "sync")) {
-        std.debug.print("Error: sync requires -r <host> flag for remote database.\n", .{});
-        std.debug.print("Usage: todo -r <host> -p <password> sync [push|pull|both] [--dry-run]\n", .{});
-        return;
-    } else {
-        // Assume firstArg might be a flag
-        var currentArg: ?[]const u8 = firstArg;
-        while (currentArg) |arg| {
-            if (arg[0] == '-') {
-                if (std.mem.eql(u8, arg, "-r")) {
-                    startupOptions.d_local = false;
-                    const dbUri = argsIter.next() orelse {
-                        std.debug.print("Usage: -r <dbUri>\n", .{});
-                        return;
-                    };
-                    if (startupOptions.d_remoteOptions) |*remote| {
-                        remote.d_dbUri = dbUri;
-                    } else {
-                        startupOptions.d_remoteOptions = .{ .d_dbUri = dbUri };
-                    }
-                } else if (std.mem.eql(u8, arg, "-p")) {
-                    const password = argsIter.next() orelse {
-                        std.debug.print("Usage: -p <password>\n", .{});
-                        return;
-                    };
-                    if (startupOptions.d_remoteOptions) |*remote| {
-                        remote.d_password = password;
-                    } else {
-                        startupOptions.d_remoteOptions = .{ .d_dbUri = "", .d_password = password };
-                    }
-                } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-                    printHelp(io);
-                    return;
-                }
-            } else {
-                if (std.mem.eql(u8, arg, "sync")) {
-                    var cmdPair: CmdPair = .{
-                        .d_cmd = arg,
-                        .d_args = Args.empty,
-                    };
-                    while (argsIter.next()) |syncArg| {
-                        try cmdPair.d_args.?.append(init.arena.allocator(), syncArg);
-                    }
-                    try commandAndArgs.append(init.arena.allocator(), cmdPair);
-                } else {
-                    const cmdPair: CmdPair = .{
-                        .d_cmd = arg,
-                        .d_args = Args.empty,
-                    };
-                    try commandAndArgs.append(init.arena.allocator(), cmdPair);
-                }
-                break;
-            }
-            currentArg = argsIter.next();
+    if (matches.getSingleValue("password")) |password| {
+        if (startupOptions.d_remoteOptions) |*remote| {
+            remote.d_password = password;
         } else {
-            std.debug.print("Usage: todo [-r <dbUri>] [-p <password>] <add|list|complete> [args]\n", .{});
+            startupOptions.d_remoteOptions = .{ .d_dbUri = "", .d_password = password };
+        }
+    }
+
+    // handle subcommands using yazap matches
+    if (matches.subcommandMatches("add")) |add_matches| {
+        var tunnel_child: std.process.Child = undefined;
+        const database = createDatabase(io, startupOptions.d_remoteOptions, &tunnel_child);
+        defer tunnel_child.kill(io);
+        defer switch (database) {
+            .sqlite => |s| _ = c.sqlite3_close(s),
+            .mariadb => |m| c.mysql_close(m),
+        };
+        const desc = add_matches.getSingleValue("description") orelse {
+            std.debug.print("Missing description for 'add'.\n", .{});
             return;
-        }
-    }
-
-    var is_sync_command = false;
-    for (commandAndArgs.items) |cmdPair| {
-        if (std.mem.eql(u8, cmdPair.d_cmd, "sync")) {
-            is_sync_command = true;
-            break;
-        }
-    }
-
-    const dbPath = "todo.db\x00";
-
-    var tunnel_child: ?std.process.Child = null;
-    var database: db.Db = undefined;
-    var local_sqlite: ?*c.sqlite3 = null;
-    var remote_mariadb: ?*c.MYSQL = null;
-
-    if (is_sync_command) {
+        };
+        addTaskCmd(database, desc);
+    } else if (matches.subcommandMatches("list")) |list_matches| {
+        var tunnel_child: std.process.Child = undefined;
+        const database = createDatabase(io, startupOptions.d_remoteOptions, &tunnel_child);
+        defer tunnel_child.kill(io);
+        defer switch (database) {
+            .sqlite => |s| _ = c.sqlite3_close(s),
+            .mariadb => |m| c.mysql_close(m),
+        };
+        const showAll = list_matches.containsArg("all");
+        const jsonOutput = list_matches.containsArg("json");
+        const interactive = list_matches.containsArg("interactive");
+        listCmd(io, database, showAll, jsonOutput, interactive, init.arena.allocator());
+    } else if (matches.subcommandMatches("interactive")) |_| {
+        var tunnel_child: std.process.Child = undefined;
+        const database = createDatabase(io, startupOptions.d_remoteOptions, &tunnel_child);
+        defer tunnel_child.kill(io);
+        defer switch (database) {
+            .sqlite => |s| _ = c.sqlite3_close(s),
+            .mariadb => |m| c.mysql_close(m),
+        };
+        interactiveCmd(io, database, false);
+    } else if (matches.subcommandMatches("complete")) |complete_matches| {
+        var tunnel_child: std.process.Child = undefined;
+        const database = createDatabase(io, startupOptions.d_remoteOptions, &tunnel_child);
+        defer tunnel_child.kill(io);
+        defer switch (database) {
+            .sqlite => |s| _ = c.sqlite3_close(s),
+            .mariadb => |m| c.mysql_close(m),
+        };
+        const idStr = complete_matches.getSingleValue("task_id") orelse {
+            std.debug.print("Missing task_id for 'complete'.\n", .{});
+            return;
+        };
+        completeCmd(io, database, idStr);
+    } else if (matches.subcommandMatches("incomplete")) |incomplete_matches| {
+        var tunnel_child: std.process.Child = undefined;
+        const database = createDatabase(io, startupOptions.d_remoteOptions, &tunnel_child);
+        defer tunnel_child.kill(io);
+        defer switch (database) {
+            .sqlite => |s| _ = c.sqlite3_close(s),
+            .mariadb => |m| c.mysql_close(m),
+        };
+        const idStr = incomplete_matches.getSingleValue("task_id") orelse {
+            std.debug.print("Missing task_id for 'incomplete'.\n", .{});
+            return;
+        };
+        incompleteCmd(io, database, idStr);
+    } else if (matches.subcommandMatches("sync")) |sync_matches| {
         const remote = startupOptions.d_remoteOptions orelse {
             std.debug.print("Error: sync requires -r <host> flag for remote database.\n", .{});
             return;
         };
-
-        local_sqlite = db.initDb(dbPath) catch {
-            std.debug.print("Error: failed to open local database.\n", .{});
-            return;
+        try runSync(io, remote, sync_matches, init.arena.allocator());
+    } else if (matches.subcommandMatches("serve")) |_| {
+        var tunnel_child: std.process.Child = undefined;
+        const database = createDatabase(io, startupOptions.d_remoteOptions, &tunnel_child);
+        defer tunnel_child.kill(io);
+        defer switch (database) {
+            .sqlite => |s| _ = c.sqlite3_close(s),
+            .mariadb => |m| c.mysql_close(m),
         };
-
-        std.debug.print("Opening SSH tunnel to {s}...\n", .{remote.d_dbUri});
-
-        var argv: std.ArrayList([]const u8) = std.ArrayList([]const u8).empty;
-        if (remote.d_password) |pw| {
-            try argv.appendSlice(init.arena.allocator(), &[_][]const u8{ "sshpass", "-p", pw });
-        }
-        try argv.appendSlice(init.arena.allocator(), &[_][]const u8{
-            "ssh", "-o", "StrictHostKeyChecking=no", "-N", "-L", "3307:127.0.0.1:3306", remote.d_dbUri,
-        });
-
-        tunnel_child = try std.process.spawn(io, .{
-            .argv = argv.items,
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .inherit,
-        });
-        try std.Io.sleep(io, .{ .nanoseconds = 2 * std.time.ns_per_s }, .real);
-        remote_mariadb = db.initMariaDb("127.0.0.1", 3307, remote.d_password) catch {
-            std.debug.print("Error: failed to connect to remote database.\n", .{});
-            return;
-        };
-
-        database = .{ .sqlite = local_sqlite.? };
-    } else if (startupOptions.d_remoteOptions) |remote| {
-        std.debug.print("Opening SSH tunnel to {s}...\n", .{remote.d_dbUri});
-
-        var argv: std.ArrayList([]const u8) = std.ArrayList([]const u8).empty;
-        if (remote.d_password) |pw| {
-            try argv.appendSlice(init.arena.allocator(), &[_][]const u8{ "sshpass", "-p", pw });
-        }
-        try argv.appendSlice(init.arena.allocator(), &[_][]const u8{
-            "ssh", "-o", "StrictHostKeyChecking=no", "-N", "-L", "3307:127.0.0.1:3306", remote.d_dbUri,
-        });
-
-        tunnel_child = try std.process.spawn(io, .{
-            .argv = argv.items,
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .inherit,
-        });
-        try std.Io.sleep(io, .{ .nanoseconds = 2 * std.time.ns_per_s }, .real);
-        database = .{ .mariadb = db.initMariaDb("127.0.0.1", 3307, remote.d_password) catch {
-            std.debug.print("Failed to connect to remote database.\n", .{});
-            return;
-        } };
+        serveCmd(io, database);
     } else {
-        database = .{ .sqlite = db.initDb(dbPath) catch {
-            std.debug.print("Failed to open local database.\n", .{});
-            return;
-        } };
-    }
-
-    defer if (tunnel_child) |*child| {
-        child.kill(io);
-    };
-
-    defer {
-        if (is_sync_command) {
-            if (local_sqlite) |s| _ = c.sqlite3_close(s);
-            if (remote_mariadb) |m| c.mysql_close(m);
-        } else {
-            db.close(database);
-        }
-    }
-
-    for (commandAndArgs.items) |cmdPair| {
-        const cmd = cmdPair.d_cmd;
-        if (std.mem.eql(u8, cmd, "add")) {
-            const desc = cmdPair.d_args orelse unreachable;
-            db.addTask(database, desc.items[0]) catch {
-                std.debug.print("Error: failed to add task.\n", .{});
-                continue;
-            };
-            std.debug.print("Task added.\n", .{});
-        } else if (std.mem.eql(u8, cmd, "list")) {
-            var showAll = false;
-            var jsonOutput = false;
-            var interactive = false;
-            if (cmdPair.d_args) |a| {
-                for (a.items) |flag| {
-                    if (std.mem.eql(u8, flag, "--all")) showAll = true;
-                    if (std.mem.eql(u8, flag, "--json")) jsonOutput = true;
-                    if (std.mem.eql(u8, flag, "-i")) interactive = true;
-                }
-            }
-            if (interactive) {
-                tui.run(io, database, showAll) catch {
-                    std.debug.print("Error: interactive mode failed.\n", .{});
-                };
-            } else if (jsonOutput) {
-                const tasks = db.queryTasks(database, showAll, init.arena.allocator()) catch {
-                    std.debug.print("Error: failed to query tasks.\n", .{});
-                    continue;
-                };
-                const output = json.serializeTasksJson(tasks.items, init.arena.allocator()) catch {
-                    std.debug.print("Error: failed to serialize tasks.\n", .{});
-                    continue;
-                };
-                stdoutWrite(io, output);
-            } else {
-                db.listTasks(io, database, showAll) catch {
-                    std.debug.print("Error: failed to list tasks.\n", .{});
-                    continue;
-                };
-            }
-        } else if (std.mem.eql(u8, cmd, "complete")) {
-            const idStr = cmdPair.d_args orelse unreachable;
-            db.changeCompletionStatus(io, database, idStr.items[0], true) catch {
-                std.debug.print("Error: failed to complete task {s}.\n", .{idStr.items[0]});
-                continue;
-            };
-            std.debug.print("Task {s} marked as completed.\n", .{idStr.items[0]});
-        } else if (std.mem.eql(u8, cmd, "incomplete")) {
-            const idStr = cmdPair.d_args orelse unreachable;
-            db.changeCompletionStatus(io, database, idStr.items[0], false) catch {
-                std.debug.print("Error: failed to mark task {s} as incomplete.\n", .{idStr.items[0]});
-                continue;
-            };
-            std.debug.print("Task {s} marked as incomplete.\n", .{idStr.items[0]});
-        } else if (std.mem.eql(u8, cmd, "sync")) {
-            var direction: sync.SyncDirection = .both;
-            var dry_run = false;
-            if (cmdPair.d_args) |a| {
-                for (a.items) |syncArg| {
-                    if (std.mem.eql(u8, syncArg, "push")) {
-                        direction = .push;
-                    } else if (std.mem.eql(u8, syncArg, "pull")) {
-                        direction = .pull;
-                    } else if (std.mem.eql(u8, syncArg, "both")) {
-                        direction = .both;
-                    } else if (std.mem.eql(u8, syncArg, "--dry-run")) {
-                        dry_run = true;
-                    } else {
-                        std.debug.print("Error: unknown sync argument '{s}'.\n", .{syncArg});
-                        return;
-                    }
-                }
-            }
-
-            const sqlite_ptr = local_sqlite orelse {
-                std.debug.print("Error: sync requires local SQLite database.\n", .{});
-                return;
-            };
-            const mariadb_ptr = remote_mariadb orelse {
-                std.debug.print("Error: sync requires remote MariaDB database.\n", .{});
-                return;
-            };
-
-            _ = sync.syncTasks(io, sqlite_ptr, mariadb_ptr, direction, dry_run, init.arena.allocator()) catch {
-                std.debug.print("Error: sync failed.\n", .{});
-                continue;
-            };
-        } else if (std.mem.eql(u8, cmd, "serve")) {
-            const socket_path = "/tmp/todo.sock";
-            server.serve(io, database, socket_path) catch {
-                std.debug.print("Error: server failed.\n", .{});
-            };
-        } else {
-            std.debug.print("Unknown command: {s}\n", .{cmd});
-        }
+        std.debug.print("Usage: todo [-r <host>] [-p <password>] <add|list|complete|incomplete|serve|sync|interactive> [args]\n", .{});
+        return;
     }
 }
