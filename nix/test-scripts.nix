@@ -55,6 +55,23 @@ let
     "$SCRIPT" ./test/test-sync.sh
   '';
 
+  test-mariadb-cli = pkgs.writeShellScriptBin "test-mariadb-cli" ''
+    set -euo pipefail
+    echo "=== Running MariaDB CLI integration test ==="
+
+    SCRIPT="''${TEST_HARNESS_DIR:-./test}/test-mariadb.sh"
+    if [[ ! -x "$SCRIPT" ]]; then
+      echo "ERROR: Cannot find test-mariadb.sh at $SCRIPT"
+      echo "Run this from the project root, or set TEST_HARNESS_DIR."
+      exit 1
+    fi
+
+    # Ensure the binary is built
+    zig build
+
+    "$SCRIPT" ./test/test-mariadb-cli.sh
+  '';
+
   test-all = pkgs.writeShellScriptBin "test-all" ''
     set -euo pipefail
     echo "=== Running all tests ==="
@@ -67,6 +84,8 @@ let
     test-integration
     echo ""
     test-sync
+    echo ""
+    test-mariadb-cli
   '';
 in
 {
@@ -75,6 +94,7 @@ in
     test-integration
     test-serve
     test-sync
+    test-mariadb-cli
     test-all
     ;
   all = [
@@ -82,6 +102,7 @@ in
     test-integration
     test-serve
     test-sync
+    test-mariadb-cli
     test-all
   ];
 }

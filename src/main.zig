@@ -33,12 +33,27 @@ fn stdoutWrite(io: std.Io, data: []const u8) void {
 
 /// Opens either a local SQLite or remote MariaDB (via SSH tunnel) depending on options.
 /// On remote, spawns the tunnel and writes it back through `tunnel` for lifetime management.
+/// If TODO_MARIADB_PORT is set, skips SSH and connects directly (test mode).
 fn createDatabase(
     io: std.Io,
     remote: ?RemoteOptions,
     tunnel: *?ssh_tunnel.SshTunnel,
 ) !db.Db {
     if (remote) |rem| {
+        if (std.c.getenv("TODO_MARIADB_PORT")) |port_ptr| {
+            std.log.info("Warning: TODO_MARIADB_PORT is set — skipping SSH tunnel (test mode only).", .{});
+            const port_str: [:0]const u8 = std.mem.span(port_ptr);
+            const port = std.fmt.parseInt(u16, port_str, 10) catch {
+                std.log.info("Error: invalid TODO_MARIADB_PORT value.", .{});
+                return error.SqlError;
+            };
+            const host: []const u8 = if (std.c.getenv("TODO_MARIADB_HOST")) |h| std.mem.span(h) else rem.d_dbUri;
+            const mariadb = db.initMariaDb(host, port, rem.d_password) catch {
+                std.log.info("Error: failed to connect to test MariaDB.", .{});
+                return error.SqlError;
+            };
+            return .{ .mariadb = mariadb };
+        }
         tunnel.* = ssh_tunnel.SshTunnel.spawn(io, rem.d_dbUri, rem.d_password) catch {
             std.log.info("Failed to spawn SSH tunnel.", .{});
             return error.SqlError;
