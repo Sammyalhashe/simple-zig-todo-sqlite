@@ -29,7 +29,7 @@ pub fn run(io: std.Io, database: db.Db, showAll: bool) !void {
     }
 
     if (tasks.items.len == 0) {
-        std.debug.print("No tasks.\n", .{});
+        std.log.info("No tasks.", .{});
         return;
     }
 
@@ -89,7 +89,7 @@ pub fn run(io: std.Io, database: db.Db, showAll: bool) !void {
             if (state.changed) {
                 const complete = std.mem.eql(u8, state.task.status, "completed");
                 db.changeCompletionStatus(io, database, state.task.id, complete) catch {
-                    std.debug.print("Error updating task {s}.\n", .{state.task.id});
+                    std.log.err("Error updating task {s}.", .{state.task.id});
                     continue;
                 };
                 changed_count += 1;
@@ -97,10 +97,9 @@ pub fn run(io: std.Io, database: db.Db, showAll: bool) !void {
         }
 
         if (changed_count > 0) {
-            std.debug.print("Updated {d} task(s).\n", .{changed_count});
+            std.log.info("Updated {d} task(s).", .{changed_count});
         }
     }
-
 }
 
 // --- Rendering ---

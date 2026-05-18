@@ -17,17 +17,17 @@ pub fn serve(io: std.Io, database: db.Db, socket_path: []const u8) !void {
     var server = try ua.listen(io, .{});
     defer server.deinit(io);
 
-    std.debug.print("Listening on {s}\n", .{socket_path});
+    std.log.info("Listening on {s}", .{socket_path});
 
     while (true) {
         var stream = server.accept(io) catch |err| {
-            std.debug.print("Accept error: {}\n", .{err});
+            std.log.err("Accept error: {}", .{err});
             continue;
         };
         defer stream.close(io);
 
         const shutdown = handleConnection(io, database, &stream) catch |err| {
-            std.debug.print("Connection error: {}\n", .{err});
+            std.log.err("Connection error: {}", .{err});
             continue;
         };
         if (shutdown) break;

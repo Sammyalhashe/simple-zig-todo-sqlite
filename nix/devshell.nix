@@ -2,6 +2,9 @@
   pkgs,
   testScripts ? [ ],
 }:
+let
+  gitHooks = import ./git-hooks.nix { inherit pkgs; };
+in
 pkgs.mkShell {
   nativeBuildInputs = with pkgs; [
     zig
@@ -21,6 +24,9 @@ pkgs.mkShell {
       socat
       sshpass
       python3
+      nixfmt-rfc-style
     ])
     ++ testScripts;
+
+  shellHook = gitHooks.installHook;
 }

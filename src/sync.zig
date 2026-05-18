@@ -118,7 +118,7 @@ pub fn syncTasks(
         if (task.remote_id) |rid| {
             const gop = remote_by_id.getOrPut(rid) catch continue;
             if (gop.found_existing) {
-                std.debug.print("Warning: duplicate remote id '{s}', skipping\n", .{rid});
+                std.log.warn("Warning: duplicate remote id '{s}', skipping", .{rid});
             } else {
                 gop.value_ptr.* = task;
             }
@@ -126,7 +126,7 @@ pub fn syncTasks(
         // Always populate by-title for backfill lookups
         const tgop = remote_by_title.getOrPut(task.title) catch continue;
         if (tgop.found_existing) {
-            std.debug.print("Warning: duplicate remote title '{s}', skipping\n", .{task.title});
+            std.log.warn("Warning: duplicate remote title '{s}', skipping", .{task.title});
         } else {
             tgop.value_ptr.* = task;
         }
@@ -182,7 +182,7 @@ pub fn syncTasks(
             .create_remote => {
                 if (!dry_run) {
                     _ = db.upsertTask(io, remote_db, local_task) catch {
-                        std.debug.print("Error: failed to sync task '{s}' to remote.\n", .{local_task.title});
+                        std.log.err("Error: failed to sync task '{s}' to remote.", .{local_task.title});
                         report.errors += 1;
                         continue;
                     };
@@ -205,7 +205,7 @@ pub fn syncTasks(
                     else
                         local_task;
                     _ = db.upsertTask(io, remote_db, task_to_push) catch {
-                        std.debug.print("Error: failed to sync task '{s}' to remote.\n", .{local_task.title});
+                        std.log.err("Error: failed to sync task '{s}' to remote.", .{local_task.title});
                         report.errors += 1;
                         continue;
                     };
@@ -215,7 +215,7 @@ pub fn syncTasks(
             .update_local => {
                 if (!dry_run) {
                     _ = db.upsertTask(io, local_db, remote_match.?) catch {
-                        std.debug.print("Error: failed to sync task '{s}' from remote.\n", .{remote_match.?.title});
+                        std.log.err("Error: failed to sync task '{s}' from remote.", .{remote_match.?.title});
                         report.errors += 1;
                         continue;
                     };
@@ -236,7 +236,7 @@ pub fn syncTasks(
         if (!dry_run and matched_via_backfill and local_task.remote_id == null) {
             if (remote_match.?.remote_id) |rid| {
                 db.setRemoteTaskId(local_db, local_task.title, rid) catch {
-                    std.debug.print("Warning: failed to backfill remote_task_id for '{s}'\n", .{local_task.title});
+                    std.log.warn("Warning: failed to backfill remote_task_id for '{s}'", .{local_task.title});
                 };
             }
         }
@@ -259,7 +259,7 @@ pub fn syncTasks(
             .create_local => {
                 if (!dry_run) {
                     _ = db.upsertTask(io, local_db, remote_task) catch {
-                        std.debug.print("Error: failed to sync task '{s}' from remote.\n", .{remote_task.title});
+                        std.log.err("Error: failed to sync task '{s}' from remote.", .{remote_task.title});
                         report.errors += 1;
                         continue;
                     };

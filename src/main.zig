@@ -40,18 +40,18 @@ fn createDatabase(
 ) !db.Db {
     if (remote) |rem| {
         tunnel.* = ssh_tunnel.SshTunnel.spawn(io, rem.d_dbUri, rem.d_password) catch {
-            std.debug.print("Failed to spawn SSH tunnel.\n", .{});
+            std.log.info("Failed to spawn SSH tunnel.", .{});
             return error.SqlError;
         };
         errdefer if (tunnel.*) |*t| t.deinit(io);
         const mariadb = db.initMariaDb("127.0.0.1", ssh_tunnel.local_forward_port, rem.d_password) catch {
-            std.debug.print("Failed to connect to remote database.\n", .{});
+            std.log.info("Failed to connect to remote database.", .{});
             return error.SqlError;
         };
         return .{ .mariadb = mariadb };
     } else {
         const sqlite = db.initDb("todo.db") catch {
-            std.debug.print("Failed to open local database.\n", .{});
+            std.log.info("Failed to open local database.", .{});
             return error.SqlError;
         };
         return .{ .sqlite = sqlite };
@@ -79,10 +79,10 @@ const DbContext = struct {
 
 fn addTaskCmd(io: std.Io, database: db.Db, desc: []const u8) void {
     db.addTask(io, database, desc) catch {
-        std.debug.print("Error: failed to add task.\n", .{});
+        std.log.info("Error: failed to add task.", .{});
         return;
     };
-    std.debug.print("Task added.\n", .{});
+    std.log.info("Task added.", .{});
 }
 
 fn listCmd(
@@ -95,51 +95,51 @@ fn listCmd(
 ) void {
     if (interactive) {
         tui.run(io, database, showAll) catch {
-            std.debug.print("Error: interactive mode failed.\n", .{});
+            std.log.info("Error: interactive mode failed.", .{});
         };
     } else if (jsonOutput) {
         const tasks = db.queryTasks(database, showAll, arena) catch {
-            std.debug.print("Error: failed to query tasks.\n", .{});
+            std.log.info("Error: failed to query tasks.", .{});
             return;
         };
         const output = json.serializeTasksJson(tasks.items, arena) catch {
-            std.debug.print("Error: failed to serialize tasks.\n", .{});
+            std.log.info("Error: failed to serialize tasks.", .{});
             return;
         };
         stdoutWrite(io, output);
     } else {
         db.listTasks(io, database, showAll) catch {
-            std.debug.print("Error: failed to list tasks.\n", .{});
+            std.log.info("Error: failed to list tasks.", .{});
         };
     }
 }
 
 fn interactiveCmd(io: std.Io, database: db.Db, showAll: bool) void {
     tui.run(io, database, showAll) catch {
-        std.debug.print("Error: interactive mode failed.\n", .{});
+        std.log.info("Error: interactive mode failed.", .{});
     };
 }
 
 fn completeCmd(io: std.Io, database: db.Db, idStr: []const u8) void {
     db.changeCompletionStatus(io, database, idStr, true) catch {
-        std.debug.print("Error: failed to complete task {s}.\n", .{idStr});
+        std.log.info("Error: failed to complete task {s}.", .{idStr});
         return;
     };
-    std.debug.print("Task {s} marked as completed.\n", .{idStr});
+    std.log.info("Task {s} marked as completed.", .{idStr});
 }
 
 fn incompleteCmd(io: std.Io, database: db.Db, idStr: []const u8) void {
     db.changeCompletionStatus(io, database, idStr, false) catch {
-        std.debug.print("Error: failed to mark task {s} as incomplete.\n", .{idStr});
+        std.log.info("Error: failed to mark task {s} as incomplete.", .{idStr});
         return;
     };
-    std.debug.print("Task {s} marked as incomplete.\n", .{idStr});
+    std.log.info("Task {s} marked as incomplete.", .{idStr});
 }
 
 fn serveCmd(io: std.Io, database: db.Db) void {
     const socket_path = "/tmp/todo.sock";
     server.serve(io, database, socket_path) catch {
-        std.debug.print("Error: server failed.\n", .{});
+        std.log.info("Error: server failed.", .{});
     };
 }
 
@@ -151,7 +151,7 @@ fn runSync(
     arena: std.mem.Allocator,
 ) !void {
     const local_sqlite = db.initDb("todo.db") catch {
-        std.debug.print("Error: failed to open local database.\n", .{});
+        std.log.info("Error: failed to open local database.", .{});
         return error.SqlError;
     };
     const local_db: db.Db = .{ .sqlite = local_sqlite };
@@ -160,26 +160,26 @@ fn runSync(
     var tunnel: ?ssh_tunnel.SshTunnel = null;
     const mariadb = blk: {
         if (std.c.getenv("TODO_MARIADB_PORT")) |port_ptr| {
-            std.debug.print("Warning: TODO_MARIADB_PORT is set — skipping SSH tunnel (test mode only).\n", .{});
+            std.log.info("Warning: TODO_MARIADB_PORT is set — skipping SSH tunnel (test mode only).", .{});
             const port_str: [:0]const u8 = std.mem.span(port_ptr);
             const port = std.fmt.parseInt(u16, port_str, 10) catch {
-                std.debug.print("Error: invalid TODO_MARIADB_PORT value.\n", .{});
+                std.log.info("Error: invalid TODO_MARIADB_PORT value.", .{});
                 return error.SqlError;
             };
             const host: []const u8 = if (std.c.getenv("TODO_MARIADB_HOST")) |h| std.mem.span(h) else remote.d_dbUri;
             break :blk db.initMariaDb(host, port, remote.d_password) catch {
-                std.debug.print("Error: failed to connect to test MariaDB.\n", .{});
+                std.log.info("Error: failed to connect to test MariaDB.", .{});
                 return error.SqlError;
             };
         }
         // Production path: SSH tunnel
-        std.debug.print("Opening SSH tunnel to {s}...\n", .{remote.d_dbUri});
+        std.log.info("Opening SSH tunnel to {s}...", .{remote.d_dbUri});
         tunnel = ssh_tunnel.SshTunnel.spawn(io, remote.d_dbUri, remote.d_password) catch {
-            std.debug.print("Error: failed to spawn SSH tunnel.\n", .{});
+            std.log.info("Error: failed to spawn SSH tunnel.", .{});
             return error.SqlError;
         };
         break :blk db.initMariaDb("127.0.0.1", ssh_tunnel.local_forward_port, remote.d_password) catch {
-            std.debug.print("Error: failed to connect to remote database.\n", .{});
+            std.log.info("Error: failed to connect to remote database.", .{});
             return error.SqlError;
         };
     };
@@ -198,13 +198,13 @@ fn runSync(
         } else if (std.mem.eql(u8, dirStr, "both")) {
             direction = .both;
         } else {
-            std.debug.print("Error: unknown sync direction '{s}'.\n", .{dirStr});
+            std.log.info("Error: unknown sync direction '{s}'.", .{dirStr});
             return error.SqlError;
         }
     }
 
     _ = sync.syncTasks(io, local_db, remote_db, direction, dry_run, arena) catch {
-        std.debug.print("Error: sync failed.\n", .{});
+        std.log.info("Error: sync failed.", .{});
     };
 }
 
@@ -273,7 +273,7 @@ pub fn main(init: std.process.Init) !void {
 
     if (startupOptions.d_remoteOptions) |rem| {
         if (rem.d_dbUri.len == 0) {
-            std.debug.print("Error: -p requires -r <host> to specify the remote host.\n", .{});
+            std.log.info("Error: -p requires -r <host> to specify the remote host.", .{});
             return;
         }
     }
@@ -282,7 +282,7 @@ pub fn main(init: std.process.Init) !void {
         var ctx = DbContext.init(io, startupOptions.d_remoteOptions) catch return;
         defer ctx.deinit(io);
         const desc = add_matches.getSingleValue("description") orelse {
-            std.debug.print("Missing description for 'add'.\n", .{});
+            std.log.info("Missing description for 'add'.", .{});
             return;
         };
         addTaskCmd(io, ctx.d_database, desc);
@@ -301,7 +301,7 @@ pub fn main(init: std.process.Init) !void {
         var ctx = DbContext.init(io, startupOptions.d_remoteOptions) catch return;
         defer ctx.deinit(io);
         const idStr = complete_matches.getSingleValue("task_id") orelse {
-            std.debug.print("Missing task_id for 'complete'.\n", .{});
+            std.log.info("Missing task_id for 'complete'.", .{});
             return;
         };
         completeCmd(io, ctx.d_database, idStr);
@@ -309,13 +309,13 @@ pub fn main(init: std.process.Init) !void {
         var ctx = DbContext.init(io, startupOptions.d_remoteOptions) catch return;
         defer ctx.deinit(io);
         const idStr = incomplete_matches.getSingleValue("task_id") orelse {
-            std.debug.print("Missing task_id for 'incomplete'.\n", .{});
+            std.log.info("Missing task_id for 'incomplete'.", .{});
             return;
         };
         incompleteCmd(io, ctx.d_database, idStr);
     } else if (matches.subcommandMatches("sync")) |sync_matches| {
         const remote = startupOptions.d_remoteOptions orelse {
-            std.debug.print("Error: sync requires -r <host> flag for remote database.\n", .{});
+            std.log.info("Error: sync requires -r <host> flag for remote database.", .{});
             return;
         };
         try runSync(io, remote, sync_matches, init.arena.allocator());

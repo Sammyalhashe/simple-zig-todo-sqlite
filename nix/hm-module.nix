@@ -48,8 +48,7 @@ in
         ExecStart =
           let
             args = lib.concatStringsSep " " (
-              lib.optional (cfg.remoteDb != null) "-r ${cfg.remoteDb}"
-              ++ [ "serve" ]
+              lib.optional (cfg.remoteDb != null) "-r ${cfg.remoteDb}" ++ [ "serve" ]
             );
           in
           "${cfg.package}/bin/todo ${args}";

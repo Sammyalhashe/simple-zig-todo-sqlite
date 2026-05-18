@@ -70,6 +70,18 @@ let
   '';
 in
 {
-  inherit test-unit test-integration test-serve test-sync test-all;
-  all = [ test-unit test-integration test-serve test-sync test-all ];
+  inherit
+    test-unit
+    test-integration
+    test-serve
+    test-sync
+    test-all
+    ;
+  all = [
+    test-unit
+    test-integration
+    test-serve
+    test-sync
+    test-all
+  ];
 }

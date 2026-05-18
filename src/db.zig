@@ -34,9 +34,9 @@ fn checkError(rc: c_int, db: ?*c.sqlite3) !void {
     if (rc != c.SQLITE_OK) {
         if (db) |d| {
             const msg = std.mem.span(c.sqlite3_errmsg(d));
-            std.debug.print("SQLite error: {s}\n", .{msg});
+            std.log.err("SQLite error: {s}", .{msg});
         } else {
-            std.debug.print("SQLite error: (null db handle)\n", .{});
+            std.log.err("SQLite error: (null db handle)", .{});
         }
         return SqlError.SqlError;
     }
@@ -52,7 +52,7 @@ pub fn beginTransaction(database: Db) !void {
             const rc = c.sqlite3_exec(s, "BEGIN", null, null, &errMsg);
             if (rc != c.SQLITE_OK) {
                 if (errMsg) |e| {
-                    std.debug.print("SQLite BEGIN error: {s}\n", .{std.mem.span(e)});
+                    std.log.err("SQLite BEGIN error: {s}", .{std.mem.span(e)});
                     c.sqlite3_free(e);
                 }
                 return SqlError.SqlError;
@@ -60,7 +60,7 @@ pub fn beginTransaction(database: Db) !void {
         },
         .mariadb => |m| {
             if (c.mysql_query(m, "START TRANSACTION") != 0) {
-                std.debug.print("MariaDB START TRANSACTION error: {s}\n", .{c.mysql_error(m)});
+                std.log.err("MariaDB START TRANSACTION error: {s}", .{c.mysql_error(m)});
                 return error.SqlError;
             }
         },
@@ -75,7 +75,7 @@ pub fn commitTransaction(database: Db) !void {
             const rc = c.sqlite3_exec(s, "COMMIT", null, null, &errMsg);
             if (rc != c.SQLITE_OK) {
                 if (errMsg) |e| {
-                    std.debug.print("SQLite COMMIT error: {s}\n", .{std.mem.span(e)});
+                    std.log.err("SQLite COMMIT error: {s}", .{std.mem.span(e)});
                     c.sqlite3_free(e);
                 }
                 return SqlError.SqlError;
@@ -83,7 +83,7 @@ pub fn commitTransaction(database: Db) !void {
         },
         .mariadb => |m| {
             if (c.mysql_query(m, "COMMIT") != 0) {
-                std.debug.print("MariaDB COMMIT error: {s}\n", .{c.mysql_error(m)});
+                std.log.err("MariaDB COMMIT error: {s}", .{c.mysql_error(m)});
                 return error.SqlError;
             }
         },
@@ -98,7 +98,7 @@ pub fn rollbackTransaction(database: Db) !void {
             const rc = c.sqlite3_exec(s, "ROLLBACK", null, null, &errMsg);
             if (rc != c.SQLITE_OK) {
                 if (errMsg) |e| {
-                    std.debug.print("SQLite ROLLBACK error: {s}\n", .{std.mem.span(e)});
+                    std.log.err("SQLite ROLLBACK error: {s}", .{std.mem.span(e)});
                     c.sqlite3_free(e);
                 }
                 return SqlError.SqlError;
@@ -106,7 +106,7 @@ pub fn rollbackTransaction(database: Db) !void {
         },
         .mariadb => |m| {
             if (c.mysql_query(m, "ROLLBACK") != 0) {
-                std.debug.print("MariaDB ROLLBACK error: {s}\n", .{c.mysql_error(m)});
+                std.log.err("MariaDB ROLLBACK error: {s}", .{c.mysql_error(m)});
                 return error.SqlError;
             }
         },
@@ -129,7 +129,7 @@ pub fn initDb(dbPath: [:0]const u8) !*c.sqlite3 {
     const rc2 = c.sqlite3_exec(db, createTable, null, null, &errMsg);
     if (rc2 != c.SQLITE_OK) {
         const msg = if (errMsg) |e| std.mem.span(e) else "unknown error";
-        std.debug.print("SQLite exec error: {s}\n", .{msg});
+        std.log.err("SQLite exec error: {s}", .{msg});
         if (errMsg) |e| c.sqlite3_free(e);
         return SqlError.SqlError;
     }
@@ -142,7 +142,7 @@ pub fn initDb(dbPath: [:0]const u8) !*c.sqlite3 {
     // If this fails on an existing DB with duplicate remote_task_ids, warn but continue.
     const idx_rc = c.sqlite3_exec(db, "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_remote_task_id ON tasks(remote_task_id) WHERE remote_task_id IS NOT NULL;", null, null, null);
     if (idx_rc != c.SQLITE_OK) {
-        std.debug.print("Warning: could not create unique index on remote_task_id (possible duplicates in existing data)\n", .{});
+        std.log.warn("Warning: could not create unique index on remote_task_id (possible duplicates in existing data)", .{});
     }
 
     return db.?;
@@ -153,7 +153,7 @@ pub fn initMariaDb(host: []const u8, port: u16, password: ?[]const u8) !*c.MYSQL
     const conn = c.mysql_init(null) orelse return error.OutOfMemory;
     const pw_ptr = if (password) |pw| pw.ptr else null;
     if (c.mysql_real_connect(conn, host.ptr, "root", pw_ptr, "supernotedb", port, null, 0) == null) {
-        std.debug.print("MariaDB connection error: {s}\n", .{c.mysql_error(conn)});
+        std.log.err("MariaDB connection error: {s}", .{c.mysql_error(conn)});
         return error.SqlError;
     }
     return conn;
@@ -216,7 +216,7 @@ pub fn addTask(io: std.Io, database: Db, desc: []const u8) !void {
             defer _ = c.mysql_stmt_close(ins_stmt);
 
             if (c.mysql_stmt_prepare(ins_stmt, ins_sql, ins_sql.len) != 0) {
-                std.debug.print("MariaDB insert prepare error: {s}\n", .{c.mysql_stmt_error(ins_stmt)});
+                std.log.err("MariaDB insert prepare error: {s}", .{c.mysql_stmt_error(ins_stmt)});
                 return error.SqlError;
             }
 
@@ -226,25 +226,25 @@ pub fn addTask(io: std.Io, database: Db, desc: []const u8) !void {
             var ins_binds = [2]c.MYSQL_BIND{
                 .{
                     .buffer_type = c.MYSQL_TYPE_STRING,
-                    .buffer = @constCast(@ptrCast(task_id.ptr)),
+                    .buffer = @ptrCast(@constCast(task_id.ptr)),
                     .buffer_length = @intCast(task_id.len),
                     .length = &task_id_len,
                 },
                 .{
                     .buffer_type = c.MYSQL_TYPE_STRING,
-                    .buffer = @constCast(@ptrCast(desc.ptr)),
+                    .buffer = @ptrCast(@constCast(desc.ptr)),
                     .buffer_length = @intCast(desc.len),
                     .length = &desc_len,
                 },
             };
 
             if (c.mysql_stmt_bind_param(ins_stmt, &ins_binds) != 0) {
-                std.debug.print("MariaDB insert bind error: {s}\n", .{c.mysql_stmt_error(ins_stmt)});
+                std.log.err("MariaDB insert bind error: {s}", .{c.mysql_stmt_error(ins_stmt)});
                 return error.SqlError;
             }
 
             if (c.mysql_stmt_execute(ins_stmt) != 0) {
-                std.debug.print("MariaDB insert execute error: {s}\n", .{c.mysql_stmt_error(ins_stmt)});
+                std.log.err("MariaDB insert execute error: {s}", .{c.mysql_stmt_error(ins_stmt)});
                 return error.SqlError;
             }
         },
@@ -296,12 +296,12 @@ pub fn queryTasks(db: Db, showAll: bool, allocator: std.mem.Allocator) !std.Arra
             else
                 "SELECT task_id, title, status FROM supernotedb.t_schedule_task WHERE is_deleted != 'Y' AND status != 'completed' ORDER BY last_modified DESC;";
             if (c.mysql_query(m, query) != 0) {
-                std.debug.print("MariaDB query error: {s}\n", .{c.mysql_error(m)});
+                std.log.err("MariaDB query error: {s}", .{c.mysql_error(m)});
                 return error.SqlError;
             }
 
             const result = c.mysql_store_result(m) orelse {
-                std.debug.print("MariaDB store_result error: {s}\n", .{c.mysql_error(m)});
+                std.log.err("MariaDB store_result error: {s}", .{c.mysql_error(m)});
                 return error.SqlError;
             };
             defer c.mysql_free_result(result);
@@ -413,12 +413,12 @@ pub fn queryAllTasksForSync(database: Db, allocator: std.mem.Allocator) !std.Arr
         .mariadb => |m| {
             const sync_query = "SELECT title, status, last_modified, completed_time, is_deleted, task_id FROM supernotedb.t_schedule_task WHERE is_deleted != 'Y';";
             if (c.mysql_query(m, sync_query) != 0) {
-                std.debug.print("MariaDB query error: {s}\n", .{c.mysql_error(m)});
+                std.log.err("MariaDB query error: {s}", .{c.mysql_error(m)});
                 return error.SqlError;
             }
 
             const result = c.mysql_store_result(m) orelse {
-                std.debug.print("MariaDB store_result error: {s}\n", .{c.mysql_error(m)});
+                std.log.err("MariaDB store_result error: {s}", .{c.mysql_error(m)});
                 return error.SqlError;
             };
             defer c.mysql_free_result(result);
@@ -561,13 +561,13 @@ pub fn upsertTask(io: std.Io, database: Db, task: SyncTask) !UpsertResult {
 
             const check_stmt = c.mysql_stmt_init(m);
             if (check_stmt == null) {
-                std.debug.print("MariaDB stmt_init error: {s}\n", .{c.mysql_error(m)});
+                std.log.err("MariaDB stmt_init error: {s}", .{c.mysql_error(m)});
                 return error.SqlError;
             }
             defer _ = c.mysql_stmt_close(check_stmt);
 
             if (c.mysql_stmt_prepare(check_stmt, check_sql, check_sql.len) != 0) {
-                std.debug.print("MariaDB stmt_prepare error: {s}\n", .{c.mysql_stmt_error(check_stmt)});
+                std.log.err("MariaDB stmt_prepare error: {s}", .{c.mysql_stmt_error(check_stmt)});
                 return error.SqlError;
             }
 
@@ -576,23 +576,23 @@ pub fn upsertTask(io: std.Io, database: Db, task: SyncTask) !UpsertResult {
             var lookup_len: c_ulong = @intCast(lookup_key.len);
             var check_bind = [1]c.MYSQL_BIND{.{
                 .buffer_type = c.MYSQL_TYPE_STRING,
-                .buffer = @constCast(@ptrCast(lookup_key.ptr)),
+                .buffer = @ptrCast(@constCast(lookup_key.ptr)),
                 .buffer_length = @intCast(lookup_key.len),
                 .length = &lookup_len,
             }};
 
             if (c.mysql_stmt_bind_param(check_stmt, &check_bind) != 0) {
-                std.debug.print("MariaDB bind_param error: {s}\n", .{c.mysql_stmt_error(check_stmt)});
+                std.log.err("MariaDB bind_param error: {s}", .{c.mysql_stmt_error(check_stmt)});
                 return error.SqlError;
             }
 
             if (c.mysql_stmt_execute(check_stmt) != 0) {
-                std.debug.print("MariaDB stmt_execute error: {s}\n", .{c.mysql_stmt_error(check_stmt)});
+                std.log.err("MariaDB stmt_execute error: {s}", .{c.mysql_stmt_error(check_stmt)});
                 return error.SqlError;
             }
 
             if (c.mysql_stmt_store_result(check_stmt) != 0) {
-                std.debug.print("MariaDB stmt_store_result error: {s}\n", .{c.mysql_stmt_error(check_stmt)});
+                std.log.err("MariaDB stmt_store_result error: {s}", .{c.mysql_stmt_error(check_stmt)});
                 return error.SqlError;
             }
 
@@ -609,7 +609,7 @@ pub fn upsertTask(io: std.Io, database: Db, task: SyncTask) !UpsertResult {
             }};
 
             if (c.mysql_stmt_bind_result(check_stmt, &result_bind) != 0) {
-                std.debug.print("MariaDB bind_result error: {s}\n", .{c.mysql_stmt_error(check_stmt)});
+                std.log.err("MariaDB bind_result error: {s}", .{c.mysql_stmt_error(check_stmt)});
                 return error.SqlError;
             }
 
@@ -627,7 +627,7 @@ pub fn upsertTask(io: std.Io, database: Db, task: SyncTask) !UpsertResult {
                     defer _ = c.mysql_stmt_close(upd_stmt);
 
                     if (c.mysql_stmt_prepare(upd_stmt, upd_sql, upd_sql.len) != 0) {
-                        std.debug.print("MariaDB update prepare error: {s}\n", .{c.mysql_stmt_error(upd_stmt)});
+                        std.log.err("MariaDB update prepare error: {s}", .{c.mysql_stmt_error(upd_stmt)});
                         return error.SqlError;
                     }
 
@@ -643,14 +643,14 @@ pub fn upsertTask(io: std.Io, database: Db, task: SyncTask) !UpsertResult {
                         // param 1: title (SET)
                         .{
                             .buffer_type = c.MYSQL_TYPE_STRING,
-                            .buffer = @constCast(@ptrCast(task.title.ptr)),
+                            .buffer = @ptrCast(@constCast(task.title.ptr)),
                             .buffer_length = @intCast(task.title.len),
                             .length = &upd_title_len,
                         },
                         // param 2: status (SET)
                         .{
                             .buffer_type = c.MYSQL_TYPE_STRING,
-                            .buffer = @constCast(@ptrCast(task.status.ptr)),
+                            .buffer = @ptrCast(@constCast(task.status.ptr)),
                             .buffer_length = @intCast(task.status.len),
                             .length = &status_len,
                         },
@@ -670,19 +670,19 @@ pub fn upsertTask(io: std.Io, database: Db, task: SyncTask) !UpsertResult {
                         // param 5: WHERE key (task_id or title)
                         .{
                             .buffer_type = c.MYSQL_TYPE_STRING,
-                            .buffer = @constCast(@ptrCast(where_key.ptr)),
+                            .buffer = @ptrCast(@constCast(where_key.ptr)),
                             .buffer_length = @intCast(where_key.len),
                             .length = &where_key_len,
                         },
                     };
 
                     if (c.mysql_stmt_bind_param(upd_stmt, &upd_binds) != 0) {
-                        std.debug.print("MariaDB update bind error: {s}\n", .{c.mysql_stmt_error(upd_stmt)});
+                        std.log.err("MariaDB update bind error: {s}", .{c.mysql_stmt_error(upd_stmt)});
                         return error.SqlError;
                     }
 
                     if (c.mysql_stmt_execute(upd_stmt) != 0) {
-                        std.debug.print("MariaDB update execute error: {s}\n", .{c.mysql_stmt_error(upd_stmt)});
+                        std.log.err("MariaDB update execute error: {s}", .{c.mysql_stmt_error(upd_stmt)});
                         return error.SqlError;
                     }
                     return .updated;
@@ -700,7 +700,7 @@ pub fn upsertTask(io: std.Io, database: Db, task: SyncTask) !UpsertResult {
                 defer _ = c.mysql_stmt_close(ins_stmt);
 
                 if (c.mysql_stmt_prepare(ins_stmt, ins_sql, ins_sql.len) != 0) {
-                    std.debug.print("MariaDB insert prepare error: {s}\n", .{c.mysql_stmt_error(ins_stmt)});
+                    std.log.err("MariaDB insert prepare error: {s}", .{c.mysql_stmt_error(ins_stmt)});
                     return error.SqlError;
                 }
 
@@ -715,21 +715,21 @@ pub fn upsertTask(io: std.Io, database: Db, task: SyncTask) !UpsertResult {
                     // param 1: task_id
                     .{
                         .buffer_type = c.MYSQL_TYPE_STRING,
-                        .buffer = @constCast(@ptrCast(task_id.ptr)),
+                        .buffer = @ptrCast(@constCast(task_id.ptr)),
                         .buffer_length = @intCast(task_id.len),
                         .length = &task_id_len,
                     },
                     // param 2: title
                     .{
                         .buffer_type = c.MYSQL_TYPE_STRING,
-                        .buffer = @constCast(@ptrCast(task.title.ptr)),
+                        .buffer = @ptrCast(@constCast(task.title.ptr)),
                         .buffer_length = @intCast(task.title.len),
                         .length = &ins_title_len,
                     },
                     // param 3: status
                     .{
                         .buffer_type = c.MYSQL_TYPE_STRING,
-                        .buffer = @constCast(@ptrCast(task.status.ptr)),
+                        .buffer = @ptrCast(@constCast(task.status.ptr)),
                         .buffer_length = @intCast(task.status.len),
                         .length = &ins_status_len,
                     },
@@ -749,17 +749,17 @@ pub fn upsertTask(io: std.Io, database: Db, task: SyncTask) !UpsertResult {
                 };
 
                 if (c.mysql_stmt_bind_param(ins_stmt, &ins_binds) != 0) {
-                    std.debug.print("MariaDB insert bind error: {s}\n", .{c.mysql_stmt_error(ins_stmt)});
+                    std.log.err("MariaDB insert bind error: {s}", .{c.mysql_stmt_error(ins_stmt)});
                     return error.SqlError;
                 }
 
                 if (c.mysql_stmt_execute(ins_stmt) != 0) {
-                    std.debug.print("MariaDB insert execute error: {s}\n", .{c.mysql_stmt_error(ins_stmt)});
+                    std.log.err("MariaDB insert execute error: {s}", .{c.mysql_stmt_error(ins_stmt)});
                     return error.SqlError;
                 }
                 return .inserted;
             } else {
-                std.debug.print("MariaDB fetch error: {s}\n", .{c.mysql_stmt_error(check_stmt)});
+                std.log.err("MariaDB fetch error: {s}", .{c.mysql_stmt_error(check_stmt)});
                 return error.SqlError;
             }
         },
@@ -799,7 +799,7 @@ fn validateIdStr(id_str: []const u8) !void {
         switch (ch) {
             '0'...'9', 'a'...'z', 'A'...'Z', '-', '_' => {},
             else => {
-                std.debug.print("Error: invalid character in task ID.\n", .{});
+                std.log.err("Error: invalid character in task ID.", .{});
                 return error.SqlError;
             },
         }
@@ -860,36 +860,36 @@ pub fn changeCompletionStatus(io: std.Io, db: Db, id_str: []const u8, complete: 
             const check_sql = "SELECT 1 FROM supernotedb.t_schedule_task WHERE task_id = ?";
             const check_stmt = c.mysql_stmt_init(m);
             if (check_stmt == null) {
-                std.debug.print("MariaDB stmt_init error: {s}\n", .{c.mysql_error(m)});
+                std.log.err("MariaDB stmt_init error: {s}", .{c.mysql_error(m)});
                 return error.SqlError;
             }
             defer _ = c.mysql_stmt_close(check_stmt);
 
             if (c.mysql_stmt_prepare(check_stmt, check_sql, check_sql.len) != 0) {
-                std.debug.print("MariaDB check prepare error: {s}\n", .{c.mysql_stmt_error(check_stmt)});
+                std.log.err("MariaDB check prepare error: {s}", .{c.mysql_stmt_error(check_stmt)});
                 return error.SqlError;
             }
 
             var check_id_len: c_ulong = @intCast(id_str.len);
             var check_bind = [1]c.MYSQL_BIND{.{
                 .buffer_type = c.MYSQL_TYPE_STRING,
-                .buffer = @constCast(@ptrCast(id_str.ptr)),
+                .buffer = @ptrCast(@constCast(id_str.ptr)),
                 .buffer_length = @intCast(id_str.len),
                 .length = &check_id_len,
             }};
 
             if (c.mysql_stmt_bind_param(check_stmt, &check_bind) != 0) {
-                std.debug.print("MariaDB check bind error: {s}\n", .{c.mysql_stmt_error(check_stmt)});
+                std.log.err("MariaDB check bind error: {s}", .{c.mysql_stmt_error(check_stmt)});
                 return error.SqlError;
             }
 
             if (c.mysql_stmt_execute(check_stmt) != 0) {
-                std.debug.print("MariaDB check execute error: {s}\n", .{c.mysql_stmt_error(check_stmt)});
+                std.log.err("MariaDB check execute error: {s}", .{c.mysql_stmt_error(check_stmt)});
                 return error.SqlError;
             }
 
             if (c.mysql_stmt_store_result(check_stmt) != 0) {
-                std.debug.print("MariaDB check store_result error: {s}\n", .{c.mysql_stmt_error(check_stmt)});
+                std.log.err("MariaDB check store_result error: {s}", .{c.mysql_stmt_error(check_stmt)});
                 return error.SqlError;
             }
 
@@ -906,13 +906,13 @@ pub fn changeCompletionStatus(io: std.Io, db: Db, id_str: []const u8, complete: 
             const sql = "UPDATE supernotedb.t_schedule_task SET status = ?, completed_time = ?, last_modified = UNIX_TIMESTAMP() WHERE task_id = ?";
             const stmt = c.mysql_stmt_init(m);
             if (stmt == null) {
-                std.debug.print("MariaDB stmt_init error: {s}\n", .{c.mysql_error(m)});
+                std.log.err("MariaDB stmt_init error: {s}", .{c.mysql_error(m)});
                 return error.SqlError;
             }
             defer _ = c.mysql_stmt_close(stmt);
 
             if (c.mysql_stmt_prepare(stmt, sql, sql.len) != 0) {
-                std.debug.print("MariaDB stmt_prepare error: {s}\n", .{c.mysql_stmt_error(stmt)});
+                std.log.err("MariaDB stmt_prepare error: {s}", .{c.mysql_stmt_error(stmt)});
                 return error.SqlError;
             }
 
@@ -930,7 +930,7 @@ pub fn changeCompletionStatus(io: std.Io, db: Db, id_str: []const u8, complete: 
                 // param 1: status
                 .{
                     .buffer_type = c.MYSQL_TYPE_STRING,
-                    .buffer = @constCast(@ptrCast(statusVal.ptr)),
+                    .buffer = @ptrCast(@constCast(statusVal.ptr)),
                     .buffer_length = @intCast(statusVal.len),
                     .length = &status_len,
                 },
@@ -944,19 +944,19 @@ pub fn changeCompletionStatus(io: std.Io, db: Db, id_str: []const u8, complete: 
                 // param 3: task_id
                 .{
                     .buffer_type = c.MYSQL_TYPE_STRING,
-                    .buffer = @constCast(@ptrCast(id_str.ptr)),
+                    .buffer = @ptrCast(@constCast(id_str.ptr)),
                     .buffer_length = @intCast(id_str.len),
                     .length = &id_len,
                 },
             };
 
             if (c.mysql_stmt_bind_param(stmt, &binds) != 0) {
-                std.debug.print("MariaDB bind_param error: {s}\n", .{c.mysql_stmt_error(stmt)});
+                std.log.err("MariaDB bind_param error: {s}", .{c.mysql_stmt_error(stmt)});
                 return error.SqlError;
             }
 
             if (c.mysql_stmt_execute(stmt) != 0) {
-                std.debug.print("MariaDB execute error: {s}\n", .{c.mysql_stmt_error(stmt)});
+                std.log.err("MariaDB execute error: {s}", .{c.mysql_stmt_error(stmt)});
                 return error.SqlError;
             }
         },

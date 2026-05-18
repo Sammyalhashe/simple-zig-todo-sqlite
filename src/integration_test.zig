@@ -44,19 +44,19 @@ fn insertTestTask(conn: *c.MYSQL, task_id: []const u8, title: []const u8, status
     var binds = [4]c.MYSQL_BIND{
         .{
             .buffer_type = c.MYSQL_TYPE_STRING,
-            .buffer = @constCast(@ptrCast(task_id.ptr)),
+            .buffer = @ptrCast(@constCast(task_id.ptr)),
             .buffer_length = @intCast(task_id.len),
             .length = &task_id_len,
         },
         .{
             .buffer_type = c.MYSQL_TYPE_STRING,
-            .buffer = @constCast(@ptrCast(title.ptr)),
+            .buffer = @ptrCast(@constCast(title.ptr)),
             .buffer_length = @intCast(title.len),
             .length = &title_len,
         },
         .{
             .buffer_type = c.MYSQL_TYPE_STRING,
-            .buffer = @constCast(@ptrCast(status.ptr)),
+            .buffer = @ptrCast(@constCast(status.ptr)),
             .buffer_length = @intCast(status.len),
             .length = &status_len,
         },
