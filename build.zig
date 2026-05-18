@@ -164,10 +164,13 @@ pub fn build(b: *std.Build) void {
     integration_test_step.dependOn(&b.addRunArtifact(integration_exe).step);
 
     // --- Convenience run step (`zig build run`) ---
-    // Defaults to connecting to the remote MariaDB host. Override with:
+    // Runs against local SQLite by default. Pass -Dr and -Dp for remote:
     //   zig build run -Dr=<host> -Dp=<password> -- <subcommand> [args]
     const run_exe = b.addRunArtifact(exe);
-    run_exe.addArgs(&.{ "-r", b.option([]const u8, "r", "remote where mariadb instance is hosted") orelse "oldboy.salh.xyz" });
+
+    if (b.option([]const u8, "r", "remote MariaDB host (omit to use local SQLite)")) |remote| {
+        run_exe.addArgs(&.{ "-r", remote });
+    }
 
     if (b.option([]const u8, "p", "password to the remote")) |password| {
         run_exe.addArgs(&.{ "-p", password });

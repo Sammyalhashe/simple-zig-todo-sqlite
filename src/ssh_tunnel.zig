@@ -32,11 +32,10 @@ pub const SshTunnel = struct {
         // Verify the tunnel is actually up by probing the forwarded port.
         // If SSH exited (bad credentials, host unreachable, port conflict),
         // the connect will fail with ConnectionRefused.
+        // Note: timeout option panics in Zig 0.16 threaded IO, so we connect
+        // without one — the 2s sleep above gives the tunnel time to bind.
         const loopback: std.Io.net.IpAddress = .{ .ip4 = .loopback(local_forward_port) };
-        const stream = loopback.connect(io, .{
-            .mode = .stream,
-            .timeout = .{ .duration = .{ .raw = .fromSeconds(2), .clock = .awake } },
-        }) catch {
+        const stream = loopback.connect(io, .{ .mode = .stream }) catch {
             // Tunnel is not up -- kill the (likely already dead) child and
             // report a clear error instead of letting the caller slam into
             // a MariaDB connect failure.
