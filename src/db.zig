@@ -323,8 +323,7 @@ pub fn queryTasks(db: Db, showAll: bool, allocator: std.mem.Allocator) !std.Arra
 }
 
 /// Queries tasks and prints them as a formatted checklist to stdout.
-pub fn listTasks(io: std.Io, db: Db, showAll: bool) !void {
-    const allocator = std.heap.page_allocator;
+pub fn listTasks(io: std.Io, db: Db, showAll: bool, allocator: std.mem.Allocator) !void {
     var tasks = try queryTasks(db, showAll, allocator);
     defer {
         for (tasks.items) |task| {

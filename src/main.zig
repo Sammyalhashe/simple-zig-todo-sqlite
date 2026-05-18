@@ -109,7 +109,7 @@ fn listCmd(
     arena: std.mem.Allocator,
 ) void {
     if (interactive) {
-        tui.run(io, database, showAll) catch {
+        tui.run(io, database, showAll, arena) catch {
             std.log.info("Error: interactive mode failed.", .{});
         };
     } else if (jsonOutput) {
@@ -123,14 +123,14 @@ fn listCmd(
         };
         stdoutWrite(io, output);
     } else {
-        db.listTasks(io, database, showAll) catch {
+        db.listTasks(io, database, showAll, arena) catch {
             std.log.info("Error: failed to list tasks.", .{});
         };
     }
 }
 
-fn interactiveCmd(io: std.Io, database: db.Db, showAll: bool) void {
-    tui.run(io, database, showAll) catch {
+fn interactiveCmd(io: std.Io, database: db.Db, showAll: bool, arena: std.mem.Allocator) void {
+    tui.run(io, database, showAll, arena) catch {
         std.log.info("Error: interactive mode failed.", .{});
     };
 }
@@ -151,9 +151,9 @@ fn incompleteCmd(io: std.Io, database: db.Db, idStr: []const u8) void {
     std.log.info("Task {s} marked as incomplete.", .{idStr});
 }
 
-fn serveCmd(io: std.Io, database: db.Db) void {
+fn serveCmd(io: std.Io, database: db.Db, arena: std.mem.Allocator) void {
     const socket_path = "/tmp/todo.sock";
-    server.serve(io, database, socket_path) catch {
+    server.serve(io, database, socket_path, arena) catch {
         std.log.info("Error: server failed.", .{});
     };
 }
@@ -311,7 +311,7 @@ pub fn main(init: std.process.Init) !void {
     } else if (matches.subcommandMatches("interactive")) |_| {
         var ctx = DbContext.init(io, startupOptions.d_remoteOptions) catch return;
         defer ctx.deinit(io);
-        interactiveCmd(io, ctx.d_database, false);
+        interactiveCmd(io, ctx.d_database, false, init.arena.allocator());
     } else if (matches.subcommandMatches("complete")) |complete_matches| {
         var ctx = DbContext.init(io, startupOptions.d_remoteOptions) catch return;
         defer ctx.deinit(io);
@@ -337,7 +337,7 @@ pub fn main(init: std.process.Init) !void {
     } else if (matches.subcommandMatches("serve")) |_| {
         var ctx = DbContext.init(io, startupOptions.d_remoteOptions) catch return;
         defer ctx.deinit(io);
-        serveCmd(io, ctx.d_database);
+        serveCmd(io, ctx.d_database, init.arena.allocator());
     } else {
         app.displayHelp(io) catch {};
         return;
