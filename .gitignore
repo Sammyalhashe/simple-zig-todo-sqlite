@@ -1,4 +1,5 @@
 # Zig build artefacts
+zig-pkg/
 zig-out/
 .zig-cache/
 
@@ -8,3 +9,9 @@ zig-out/
 todo.db
 
 result/
+
+
+*.log
+test_random.o
+test_random2.o
+*.o

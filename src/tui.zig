@@ -4,14 +4,20 @@ const db = @import("db");
 
 const allocator = std.heap.page_allocator;
 
+// --- Types ---
+
+/// Tracks a task's current and original status so we can detect toggles on exit.
 const TaskState = struct {
     task: db.Task,
     original_status: []const u8,
     changed: bool,
 };
 
+// --- Public API ---
+
+/// Interactive ncurses TUI for toggling task completion.
+/// Commits all changes on 'q'; discards on Escape.
 pub fn run(io: std.Io, database: db.Db, showAll: bool) !void {
-    std.debug.print("INTERACTIVE::run", .{});
     var tasks = try db.queryTasks(database, showAll, allocator);
     defer {
         for (tasks.items) |task| {
@@ -97,6 +103,9 @@ pub fn run(io: std.Io, database: db.Db, showAll: bool) !void {
 
 }
 
+// --- Rendering ---
+
+/// Redraws the task list with scroll, cursor highlight, and change indicators.
 fn draw(states: []const TaskState, cursor: usize, scroll_offset: *usize) void {
     _ = c.erase();
 

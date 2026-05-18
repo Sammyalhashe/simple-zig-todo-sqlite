@@ -5,8 +5,11 @@ const net = std.Io.net;
 
 const allocator = std.heap.page_allocator;
 
+// --- Server lifecycle ---
+
+/// Listens on a Unix domain socket and dispatches newline-delimited JSON-RPC requests.
+/// Removes any stale socket file before binding.
 pub fn serve(io: std.Io, database: db.Db, socket_path: []const u8) !void {
-    // Remove stale socket file via C unlink
     const c_path = @as([*:0]const u8, @ptrCast(socket_path.ptr));
     _ = std.c.unlink(c_path);
 
@@ -23,18 +26,27 @@ pub fn serve(io: std.Io, database: db.Db, socket_path: []const u8) !void {
         };
         defer stream.close(io);
 
-        handleConnection(io, database, &stream) catch |err| {
+        const shutdown = handleConnection(io, database, &stream) catch |err| {
             std.debug.print("Connection error: {}\n", .{err});
+            continue;
         };
+        if (shutdown) break;
     }
+
+    _ = std.c.unlink(c_path);
 }
+
+// --- Request handling ---
 
 const Response = struct {
     data: []const u8,
     allocated: bool,
+    shutdown: bool = false,
 };
 
-fn handleConnection(io: std.Io, database: db.Db, stream: *net.Stream) !void {
+/// Reads newline-delimited messages from a single client connection, dispatching each.
+/// Returns true if a shutdown was requested.
+fn handleConnection(io: std.Io, database: db.Db, stream: *net.Stream) !bool {
     var read_buf: [4096]u8 = undefined;
     var write_buf: [8192]u8 = undefined;
     var reader = stream.reader(io, &read_buf);
@@ -49,9 +61,9 @@ fn handleConnection(io: std.Io, database: db.Db, stream: *net.Stream) !void {
         var chunk: [1]u8 = undefined;
         var chunk_slice: [1][]u8 = .{&chunk};
         const n = reader.interface.readVec(&chunk_slice) catch {
-            return;
+            return false;
         };
-        if (n == 0) return;
+        if (n == 0) return false;
 
         if (chunk[0] == '\n') {
             const response = processRequest(io, database, line_buf[0..line_len]) catch Response{
@@ -61,6 +73,7 @@ fn handleConnection(io: std.Io, database: db.Db, stream: *net.Stream) !void {
             defer if (response.allocated) allocator.free(response.data);
             try writer.interface.writeAll(response.data);
             try writer.interface.flush();
+            if (response.shutdown) return true;
             line_len = 0;
         } else {
             if (line_len < line_buf.len) {
@@ -75,8 +88,8 @@ fn handleConnection(io: std.Io, database: db.Db, stream: *net.Stream) !void {
                 while (true) {
                     var drain: [1]u8 = undefined;
                     var drain_slice: [1][]u8 = .{&drain};
-                    const dn = reader.interface.readVec(&drain_slice) catch return;
-                    if (dn == 0) return;
+                    const dn = reader.interface.readVec(&drain_slice) catch return false;
+                    if (dn == 0) return false;
                     if (drain[0] == '\n') break;
                 }
             }
@@ -84,8 +97,8 @@ fn handleConnection(io: std.Io, database: db.Db, stream: *net.Stream) !void {
     }
 }
 
+/// Routes a single JSON-RPC request to the appropriate handler based on the "method" field.
 fn processRequest(io: std.Io, database: db.Db, line: []const u8) !Response {
-    // Simple JSON parsing: look for "method" field
     const method = json.extractJsonString(line, "method") orelse return .{
         .data = "{\"error\":\"missing method\"}\n",
         .allocated = false,
@@ -110,7 +123,7 @@ fn processRequest(io: std.Io, database: db.Db, line: []const u8) !Response {
             .data = "{\"error\":\"missing title\"}\n",
             .allocated = false,
         };
-        db.addTask(database, title) catch return .{
+        db.addTask(io, database, title) catch return .{
             .data = "{\"error\":\"addTask failed\"}\n",
             .allocated = false,
         };
@@ -136,7 +149,7 @@ fn processRequest(io: std.Io, database: db.Db, line: []const u8) !Response {
         };
         return .{ .data = "{\"ok\":true}\n", .allocated = false };
     } else if (std.mem.eql(u8, method, "shutdown")) {
-        return .{ .data = "{\"ok\":\"shutting down\"}\n", .allocated = false };
+        return .{ .data = "{\"ok\":\"shutting down\"}\n", .allocated = false, .shutdown = true };
     } else if (std.mem.eql(u8, method, "syncStatus") or std.mem.eql(u8, method, "syncTasks")) {
         return .{ .data = "{\"error\":\"sync requires both local and remote databases; use CLI sync command\"}\n", .allocated = false };
     }

@@ -1,13 +1,18 @@
 const std = @import("std");
 
+// --- Types ---
+
+/// A task with string fields suitable for display and JSON serialization.
 pub const Task = struct {
     id: []const u8,
     title: []const u8,
     status: []const u8,
 };
 
-/// Append a JSON-escaped version of `s` to `list`, using `alloc` for growth.
-/// Escapes: double-quote, backslash, newline, tab, and all control chars < 0x20.
+// --- Escaping ---
+
+/// Appends a JSON-escaped version of `s` to `list`, using `alloc` for growth.
+/// Escapes double-quote, backslash, newline, tab, and control chars below 0x20.
 pub fn appendEscaped(list: *std.ArrayList(u8), alloc: std.mem.Allocator, s: []const u8) !void {
     for (s) |ch| {
         switch (ch) {
@@ -28,8 +33,7 @@ pub fn appendEscaped(list: *std.ArrayList(u8), alloc: std.mem.Allocator, s: []co
     }
 }
 
-/// Write a JSON-escaped string to any writer type (supports std.Io.Writer,
-/// std.io.fixedBufferStream, etc.)
+/// Writes a JSON-escaped string to any writer type (std.Io.Writer, fixedBufferStream, etc.).
 pub fn writeJsonEscaped(w: anytype, s: []const u8) @TypeOf(w).Error!void {
     for (s) |ch| {
         switch (ch) {
@@ -48,7 +52,10 @@ pub fn writeJsonEscaped(w: anytype, s: []const u8) @TypeOf(w).Error!void {
     }
 }
 
-/// Minimal JSON string extractor: finds "key":"value" pattern.
+// --- Extraction ---
+
+/// Extracts the string value for a given key from a JSON object (linear scan).
+/// Does not handle nested objects or arrays — only top-level "key":"value" pairs.
 pub fn extractJsonString(json_data: []const u8, key: []const u8) ?[]const u8 {
     var i: usize = 0;
     while (i + key.len + 4 < json_data.len) : (i += 1) {
@@ -63,7 +70,13 @@ pub fn extractJsonString(json_data: []const u8, key: []const u8) ?[]const u8 {
             if (j < json_data.len and json_data[j] == '"') {
                 j += 1; // past opening quote of value
                 const start = j;
-                while (j < json_data.len and json_data[j] != '"') : (j += 1) {}
+                while (j < json_data.len) : (j += 1) {
+                    if (json_data[j] == '\\') {
+                        j += 1;
+                        continue;
+                    }
+                    if (json_data[j] == '"') break;
+                }
                 return json_data[start..j];
             }
         }
@@ -71,7 +84,7 @@ pub fn extractJsonString(json_data: []const u8, key: []const u8) ?[]const u8 {
     return null;
 }
 
-/// Minimal JSON bool extractor: finds "key":true/false pattern.
+/// Extracts a boolean value for a given key from a JSON object (linear scan).
 pub fn extractJsonBool(json_data: []const u8, key: []const u8) ?bool {
     var i: usize = 0;
     while (i + key.len + 4 < json_data.len) : (i += 1) {
@@ -88,7 +101,9 @@ pub fn extractJsonBool(json_data: []const u8, key: []const u8) ?bool {
     return null;
 }
 
-/// Serialize a slice of Tasks into a JSON byte array.
+// --- Serialization ---
+
+/// Serializes a slice of Tasks into a JSON array string (newline-terminated).
 /// Caller owns the returned memory and must free it with `alloc`.
 pub fn serializeTasksJson(tasks: []const Task, alloc: std.mem.Allocator) ![]const u8 {
     var resp = std.ArrayList(u8).empty;
@@ -156,6 +171,15 @@ test "extractJsonString: single-char key" {
 
 test "extractJsonString: truncated input" {
     try std.testing.expect(extractJsonString("{", "method") == null);
+}
+
+test "extractJsonString: handles escaped quotes" {
+    const input =
+        \\{"title":"say \"hello\"","status":"needsAction"}
+    ;
+    const result = extractJsonString(input, "title");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("say \\\"hello\\\"", result.?);
 }
 
 // -- extractJsonBool tests -------------------------------------------------

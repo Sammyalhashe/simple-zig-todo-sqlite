@@ -1,12 +1,26 @@
-{ pkgs }:
+{
+  pkgs,
+  testScripts ? [ ],
+}:
 pkgs.mkShell {
-  buildInputs = with pkgs; [
+  nativeBuildInputs = with pkgs; [
     zig
-    sqlite
-    mariadb-connector-c
-    ncurses
-    sshpass
     pkg-config
     zls
   ];
+
+  buildInputs = with pkgs; [
+    sqlite
+    mariadb-connector-c
+    ncurses
+  ];
+
+  packages =
+    (with pkgs; [
+      mariadb
+      socat
+      sshpass
+      python3
+    ])
+    ++ testScripts;
 }
