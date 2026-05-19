@@ -23,6 +23,7 @@ const RemoteOptions = struct {
 const StartupOption = struct {
     d_local: bool = true,
     d_remoteOptions: ?RemoteOptions = null,
+    d_jjPath: ?[]const u8 = null,
 };
 
 // --- Database initialization ---
@@ -38,7 +39,16 @@ fn createDatabase(
     io: std.Io,
     remote: ?RemoteOptions,
     tunnel: *?ssh_tunnel.SshTunnel,
-) !db.Db {
+    allocator: std.mem.Allocator,
+    jj_path: ?[]const u8,
+) !db.AnyBackend {
+    if (jj_path) |path| {
+        const jj = db.openJj(allocator, io, path) catch {
+            std.log.info("Error: failed to open jj database at '{s}'.", .{path});
+            return error.SqlError;
+        };
+        return .{ .jj = jj };
+    }
     if (remote) |rem| {
         if (std.c.getenv("TODO_MARIADB_PORT")) |port_ptr| {
             std.log.info("Warning: TODO_MARIADB_PORT is set — skipping SSH tunnel (test mode only).", .{});
@@ -48,7 +58,7 @@ fn createDatabase(
                 return error.SqlError;
             };
             const host: []const u8 = if (std.c.getenv("TODO_MARIADB_HOST")) |h| std.mem.span(h) else rem.d_dbUri;
-            const mariadb = db.initMariaDb(host, port, rem.d_password) catch {
+            const mariadb = db.openMariaDb(allocator, host, port, rem.d_password) catch {
                 std.log.info("Error: failed to connect to test MariaDB.", .{});
                 return error.SqlError;
             };
@@ -59,13 +69,13 @@ fn createDatabase(
             return error.SqlError;
         };
         errdefer if (tunnel.*) |*t| t.deinit(io);
-        const mariadb = db.initMariaDb("127.0.0.1", ssh_tunnel.local_forward_port, rem.d_password) catch {
+        const mariadb = db.openMariaDb(allocator, "127.0.0.1", ssh_tunnel.local_forward_port, rem.d_password) catch {
             std.log.info("Failed to connect to remote database.", .{});
             return error.SqlError;
         };
         return .{ .mariadb = mariadb };
     } else {
-        const sqlite = db.initDb("todo.db") catch {
+        const sqlite = db.openSqlite(allocator, "todo.db") catch {
             std.log.info("Failed to open local database.", .{});
             return error.SqlError;
         };
@@ -75,12 +85,12 @@ fn createDatabase(
 
 /// Owns a database handle and its optional SSH tunnel, ensuring paired cleanup.
 const DbContext = struct {
-    d_database: db.Db,
+    d_database: db.AnyBackend,
     d_tunnel: ?ssh_tunnel.SshTunnel,
 
-    fn init(io: std.Io, remote: ?RemoteOptions) !DbContext {
+    fn init(io: std.Io, remote: ?RemoteOptions, allocator: std.mem.Allocator, jj_path: ?[]const u8) !DbContext {
         var tunnel: ?ssh_tunnel.SshTunnel = null;
-        const database = try createDatabase(io, remote, &tunnel);
+        const database = try createDatabase(io, remote, &tunnel, allocator, jj_path);
         return .{ .d_database = database, .d_tunnel = tunnel };
     }
 
@@ -158,18 +168,27 @@ fn serveCmd(io: std.Io, database: db.Db, arena: std.mem.Allocator) void {
     };
 }
 
-/// Opens both local SQLite and remote MariaDB, then runs bidirectional sync.
+/// Opens local (SQLite or jj) and remote MariaDB, then runs bidirectional sync.
 fn runSync(
     io: std.Io,
     remote: RemoteOptions,
+    jj_path: ?[]const u8,
     sync_matches: ArgMatches,
     arena: std.mem.Allocator,
 ) !void {
-    const local_sqlite = db.initDb("todo.db") catch {
-        std.log.info("Error: failed to open local database.", .{});
-        return error.SqlError;
+    const local_db: db.AnyBackend = if (jj_path) |path| blk: {
+        const jj = db.openJj(arena, io, path) catch {
+            std.log.info("Error: failed to open jj database at '{s}'.", .{path});
+            return error.SqlError;
+        };
+        break :blk .{ .jj = jj };
+    } else blk: {
+        const sqlite = db.openSqlite(arena, "todo.db") catch {
+            std.log.info("Error: failed to open local database.", .{});
+            return error.SqlError;
+        };
+        break :blk .{ .sqlite = sqlite };
     };
-    const local_db: db.Db = .{ .sqlite = local_sqlite };
     defer db.close(local_db);
 
     var tunnel: ?ssh_tunnel.SshTunnel = null;
@@ -182,7 +201,7 @@ fn runSync(
                 return error.SqlError;
             };
             const host: []const u8 = if (std.c.getenv("TODO_MARIADB_HOST")) |h| std.mem.span(h) else remote.d_dbUri;
-            break :blk db.initMariaDb(host, port, remote.d_password) catch {
+            break :blk db.openMariaDb(arena, host, port, remote.d_password) catch {
                 std.log.info("Error: failed to connect to test MariaDB.", .{});
                 return error.SqlError;
             };
@@ -193,13 +212,13 @@ fn runSync(
             std.log.info("Error: failed to spawn SSH tunnel.", .{});
             return error.SqlError;
         };
-        break :blk db.initMariaDb("127.0.0.1", ssh_tunnel.local_forward_port, remote.d_password) catch {
+        break :blk db.openMariaDb(arena, "127.0.0.1", ssh_tunnel.local_forward_port, remote.d_password) catch {
             std.log.info("Error: failed to connect to remote database.", .{});
             return error.SqlError;
         };
     };
     defer if (tunnel) |*t| t.deinit(io);
-    const remote_db: db.Db = .{ .mariadb = mariadb };
+    const remote_db: db.AnyBackend = .{ .mariadb = mariadb };
     defer db.close(remote_db);
 
     var direction: sync.SyncDirection = .both;
@@ -237,6 +256,7 @@ pub fn main(init: std.process.Init) !void {
 
     try todo.addArg(Arg.singleValueOption("remote", 'r', "remote of the MariaDB"));
     try todo.addArg(Arg.singleValueOption("password", 'p', "password of the host where the MariaDB is hosted"));
+    try todo.addArg(Arg.singleValueOption("jj", 'g', "path to jj-backed JSON-lines task file (uses jj backend instead of SQLite)"));
 
     var add_cmd = app.createCommand("add", "Add a task to the todo list");
     try add_cmd.addArg(Arg.positional("description", "Task description", null));
@@ -274,6 +294,10 @@ pub fn main(init: std.process.Init) !void {
         .d_remoteOptions = null,
     };
 
+    if (matches.getSingleValue("jj")) |jj_path| {
+        startupOptions.d_jjPath = jj_path;
+    }
+
     if (matches.getSingleValue("remote")) |remote| {
         startupOptions.d_remoteOptions = .{ .d_dbUri = remote };
     }
@@ -294,7 +318,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (matches.subcommandMatches("add")) |add_matches| {
-        var ctx = DbContext.init(io, startupOptions.d_remoteOptions) catch return;
+        var ctx = DbContext.init(io, startupOptions.d_remoteOptions, init.arena.allocator(), startupOptions.d_jjPath) catch return;
         defer ctx.deinit(io);
         const desc = add_matches.getSingleValue("description") orelse {
             std.log.info("Missing description for 'add'.", .{});
@@ -302,18 +326,18 @@ pub fn main(init: std.process.Init) !void {
         };
         addTaskCmd(io, ctx.d_database, desc);
     } else if (matches.subcommandMatches("list")) |list_matches| {
-        var ctx = DbContext.init(io, startupOptions.d_remoteOptions) catch return;
+        var ctx = DbContext.init(io, startupOptions.d_remoteOptions, init.arena.allocator(), startupOptions.d_jjPath) catch return;
         defer ctx.deinit(io);
         const showAll = list_matches.containsArg("all");
         const jsonOutput = list_matches.containsArg("json");
         const interactive = list_matches.containsArg("interactive");
         listCmd(io, ctx.d_database, showAll, jsonOutput, interactive, init.arena.allocator());
     } else if (matches.subcommandMatches("interactive")) |_| {
-        var ctx = DbContext.init(io, startupOptions.d_remoteOptions) catch return;
+        var ctx = DbContext.init(io, startupOptions.d_remoteOptions, init.arena.allocator(), startupOptions.d_jjPath) catch return;
         defer ctx.deinit(io);
         interactiveCmd(io, ctx.d_database, false, init.arena.allocator());
     } else if (matches.subcommandMatches("complete")) |complete_matches| {
-        var ctx = DbContext.init(io, startupOptions.d_remoteOptions) catch return;
+        var ctx = DbContext.init(io, startupOptions.d_remoteOptions, init.arena.allocator(), startupOptions.d_jjPath) catch return;
         defer ctx.deinit(io);
         const idStr = complete_matches.getSingleValue("task_id") orelse {
             std.log.info("Missing task_id for 'complete'.", .{});
@@ -321,7 +345,7 @@ pub fn main(init: std.process.Init) !void {
         };
         completeCmd(io, ctx.d_database, idStr);
     } else if (matches.subcommandMatches("incomplete")) |incomplete_matches| {
-        var ctx = DbContext.init(io, startupOptions.d_remoteOptions) catch return;
+        var ctx = DbContext.init(io, startupOptions.d_remoteOptions, init.arena.allocator(), startupOptions.d_jjPath) catch return;
         defer ctx.deinit(io);
         const idStr = incomplete_matches.getSingleValue("task_id") orelse {
             std.log.info("Missing task_id for 'incomplete'.", .{});
@@ -333,9 +357,9 @@ pub fn main(init: std.process.Init) !void {
             std.log.info("Error: sync requires -r <host> flag for remote database.", .{});
             return;
         };
-        try runSync(io, remote, sync_matches, init.arena.allocator());
+        try runSync(io, remote, startupOptions.d_jjPath, sync_matches, init.arena.allocator());
     } else if (matches.subcommandMatches("serve")) |_| {
-        var ctx = DbContext.init(io, startupOptions.d_remoteOptions) catch return;
+        var ctx = DbContext.init(io, startupOptions.d_remoteOptions, init.arena.allocator(), startupOptions.d_jjPath) catch return;
         defer ctx.deinit(io);
         serveCmd(io, ctx.d_database, init.arena.allocator());
     } else {

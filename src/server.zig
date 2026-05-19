@@ -7,7 +7,7 @@ const net = std.Io.net;
 
 /// Listens on a Unix domain socket and dispatches newline-delimited JSON-RPC requests.
 /// Removes any stale socket file before binding.
-pub fn serve(io: std.Io, database: db.Db, socket_path: []const u8, allocator: std.mem.Allocator) !void {
+pub fn serve(io: std.Io, database: db.AnyBackend, socket_path: []const u8, allocator: std.mem.Allocator) !void {
     const c_path = @as([*:0]const u8, @ptrCast(socket_path.ptr));
     _ = std.c.unlink(c_path);
 
@@ -44,7 +44,7 @@ const Response = struct {
 
 /// Reads newline-delimited messages from a single client connection, dispatching each.
 /// Returns true if a shutdown was requested.
-fn handleConnection(io: std.Io, database: db.Db, stream: *net.Stream, allocator: std.mem.Allocator) !bool {
+fn handleConnection(io: std.Io, database: db.AnyBackend, stream: *net.Stream, allocator: std.mem.Allocator) !bool {
     var read_buf: [4096]u8 = undefined;
     var write_buf: [8192]u8 = undefined;
     var reader = stream.reader(io, &read_buf);
@@ -96,7 +96,7 @@ fn handleConnection(io: std.Io, database: db.Db, stream: *net.Stream, allocator:
 }
 
 /// Routes a single JSON-RPC request to the appropriate handler based on the "method" field.
-fn processRequest(io: std.Io, database: db.Db, line: []const u8, allocator: std.mem.Allocator) !Response {
+fn processRequest(io: std.Io, database: db.AnyBackend, line: []const u8, allocator: std.mem.Allocator) !Response {
     const method = json.extractJsonString(line, "method") orelse return .{
         .data = "{\"error\":\"missing method\"}\n",
         .allocated = false,

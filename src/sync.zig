@@ -78,8 +78,8 @@ pub fn classifyTask(
 /// In dry-run mode, reports what would change without writing.
 pub fn syncTasks(
     io: std.Io,
-    local_db: db.Db,
-    remote_db: db.Db,
+    local_db: db.AnyBackend,
+    remote_db: db.AnyBackend,
     direction: SyncDirection,
     dry_run: bool,
     allocator: std.mem.Allocator,

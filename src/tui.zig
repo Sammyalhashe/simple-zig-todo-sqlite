@@ -15,7 +15,7 @@ const TaskState = struct {
 
 /// Interactive ncurses TUI for toggling task completion.
 /// Commits all changes on 'q'; discards on Escape.
-pub fn run(io: std.Io, database: db.Db, showAll: bool, allocator: std.mem.Allocator) !void {
+pub fn run(io: std.Io, database: db.AnyBackend, showAll: bool, allocator: std.mem.Allocator) !void {
     var tasks = try db.queryTasks(database, showAll, allocator);
     defer {
         for (tasks.items) |task| {
@@ -33,16 +33,17 @@ pub fn run(io: std.Io, database: db.Db, showAll: bool, allocator: std.mem.Alloca
     }
 
     var states = std.ArrayList(TaskState).empty;
-    // Free the current status pointer for each state (may differ from the
-    // original if the task was toggled during this session).
     defer {
-        for (states.items) |state| allocator.free(state.task.status);
+        for (states.items) |state| {
+            allocator.free(state.task.status);
+            allocator.free(state.original_status);
+        }
         states.deinit(allocator);
     }
     for (tasks.items) |task| {
         try states.append(allocator, .{
             .task = task,
-            .original_status = task.status,
+            .original_status = try allocator.dupe(u8, task.status),
             .changed = false,
         });
     }

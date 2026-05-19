@@ -10,25 +10,25 @@ const sync = @import("sync");
 /// Connects to the ephemeral MariaDB instance started by test/test-mariadb.sh.
 /// Returns null when the env vars are absent (i.e. not running under the test
 /// harness), so the caller can print "skipped" and exit 0.
-fn getTestMariaDb() ?*c.MYSQL {
+fn getTestMariaDb(allocator: std.mem.Allocator) ?*db.MariaBackend {
     const host_ptr = std.c.getenv("TEST_MARIADB_HOST") orelse return null;
     const host: [:0]const u8 = std.mem.span(host_ptr);
     const port_ptr = std.c.getenv("TEST_MARIADB_PORT") orelse return null;
     const port_str: [:0]const u8 = std.mem.span(port_ptr);
     const port = std.fmt.parseInt(u16, port_str, 10) catch return null;
-    return db.initMariaDb(host, port, null) catch null;
+    return db.openMariaDb(allocator, host, port, null) catch null;
 }
 
 /// Deletes all test rows (task_id starting with "test-") to isolate tests.
-fn cleanupTestRows(conn: *c.MYSQL) void {
-    _ = c.mysql_query(conn, "DELETE FROM supernotedb.t_schedule_task WHERE task_id LIKE 'test-%'");
+fn cleanupTestRows(conn: *db.MariaBackend) void {
+    _ = c.mysql_query(conn.handle, "DELETE FROM supernotedb.t_schedule_task WHERE task_id LIKE 'test-%'");
 }
 
 /// Inserts a task with a known test-prefixed task_id directly via SQL, bypassing
 /// UUID generation. This allows tests to control the task_id for verification.
-fn insertTestTask(conn: *c.MYSQL, task_id: []const u8, title: []const u8, status: []const u8, last_modified: i64) !void {
+fn insertTestTask(conn: *db.MariaBackend, task_id: []const u8, title: []const u8, status: []const u8, last_modified: i64) !void {
     const sql = "INSERT INTO supernotedb.t_schedule_task (task_id, title, status, last_modified, is_deleted, user_id, due_time) VALUES (?, ?, ?, ?, 'N', 0, 0)";
-    const stmt = c.mysql_stmt_init(conn) orelse return error.SqlError;
+    const stmt = c.mysql_stmt_init(conn.handle) orelse return error.SqlError;
     defer _ = c.mysql_stmt_close(stmt);
 
     if (c.mysql_stmt_prepare(stmt, sql, sql.len) != 0) {
@@ -91,15 +91,16 @@ fn freeTasks(tasks: *std.ArrayList(db.Task), allocator: std.mem.Allocator) void 
 // Test functions
 // ---------------------------------------------------------------------------
 
-fn testAddTask(io: std.Io, conn: *c.MYSQL, allocator: std.mem.Allocator) !void {
+fn testAddTask(io: std.Io, conn: *db.MariaBackend, allocator: std.mem.Allocator) !void {
     cleanupTestRows(conn);
     defer cleanupTestRows(conn);
 
+    const database = db.AnyBackend{ .mariadb = conn };
     const title = "test-addTask-integration";
-    try db.addTask(io, .{ .mariadb = conn }, title);
+    try db.addTask(io, database, title);
 
     // Verify: query back by title
-    var tasks = try db.queryTasks(.{ .mariadb = conn }, true, allocator);
+    var tasks = try db.queryTasks(database, true, allocator);
     defer freeTasks(&tasks, allocator);
 
     var found = false;
@@ -115,14 +116,15 @@ fn testAddTask(io: std.Io, conn: *c.MYSQL, allocator: std.mem.Allocator) !void {
     if (!found) return error.TestExpectedEqual;
 }
 
-fn testQueryTasks(io: std.Io, conn: *c.MYSQL, allocator: std.mem.Allocator) !void {
+fn testQueryTasks(io: std.Io, conn: *db.MariaBackend, allocator: std.mem.Allocator) !void {
     cleanupTestRows(conn);
     defer cleanupTestRows(conn);
 
-    try db.addTask(io, .{ .mariadb = conn }, "test-query-1");
-    try db.addTask(io, .{ .mariadb = conn }, "test-query-2");
+    const database = db.AnyBackend{ .mariadb = conn };
+    try db.addTask(io, database, "test-query-1");
+    try db.addTask(io, database, "test-query-2");
 
-    var tasks = try db.queryTasks(.{ .mariadb = conn }, true, allocator);
+    var tasks = try db.queryTasks(database, true, allocator);
     defer freeTasks(&tasks, allocator);
 
     // Count our test tasks
@@ -133,18 +135,20 @@ fn testQueryTasks(io: std.Io, conn: *c.MYSQL, allocator: std.mem.Allocator) !voi
     if (count != 2) return error.TestExpectedEqual;
 }
 
-fn testChangeCompletionStatus(io: std.Io, conn: *c.MYSQL, allocator: std.mem.Allocator) !void {
+fn testChangeCompletionStatus(io: std.Io, conn: *db.MariaBackend, allocator: std.mem.Allocator) !void {
     cleanupTestRows(conn);
     defer cleanupTestRows(conn);
+
+    const database = db.AnyBackend{ .mariadb = conn };
 
     // Insert a task with known task_id
     try insertTestTask(conn, "test-complete-001", "test-complete-task", "needsAction", 1000);
 
     // Mark it complete
-    try db.changeCompletionStatus(io, .{ .mariadb = conn }, "test-complete-001", true);
+    try db.changeCompletionStatus(io, database, "test-complete-001", true);
 
     // Verify status changed
-    var tasks = try db.queryTasks(.{ .mariadb = conn }, true, allocator);
+    var tasks = try db.queryTasks(database, true, allocator);
     defer freeTasks(&tasks, allocator);
 
     for (tasks.items) |task| {
@@ -159,10 +163,11 @@ fn testChangeCompletionStatus(io: std.Io, conn: *c.MYSQL, allocator: std.mem.All
     return error.TestUnexpectedResult;
 }
 
-fn testUpsertInsert(io: std.Io, conn: *c.MYSQL) !void {
+fn testUpsertInsert(io: std.Io, conn: *db.MariaBackend) !void {
     cleanupTestRows(conn);
     defer cleanupTestRows(conn);
 
+    const database = db.AnyBackend{ .mariadb = conn };
     const task = db.SyncTask{
         .title = "test-upsert-new",
         .status = "needsAction",
@@ -172,13 +177,15 @@ fn testUpsertInsert(io: std.Io, conn: *c.MYSQL) !void {
         .remote_id = null,
     };
 
-    const result = try db.upsertTask(io, .{ .mariadb = conn }, task);
+    const result = try db.upsertTask(io, database, task);
     if (result != .inserted) return error.TestExpectedEqual;
 }
 
-fn testUpsertUpdate(io: std.Io, conn: *c.MYSQL) !void {
+fn testUpsertUpdate(io: std.Io, conn: *db.MariaBackend) !void {
     cleanupTestRows(conn);
     defer cleanupTestRows(conn);
+
+    const database = db.AnyBackend{ .mariadb = conn };
 
     // Insert a task with last_modified=1000
     try insertTestTask(conn, "test-upsert-upd", "test-upsert-update", "needsAction", 1000);
@@ -193,13 +200,15 @@ fn testUpsertUpdate(io: std.Io, conn: *c.MYSQL) !void {
         .remote_id = "test-upsert-upd",
     };
 
-    const result = try db.upsertTask(io, .{ .mariadb = conn }, task);
+    const result = try db.upsertTask(io, database, task);
     if (result != .updated) return error.TestExpectedEqual;
 }
 
-fn testUpsertSkip(io: std.Io, conn: *c.MYSQL) !void {
+fn testUpsertSkip(io: std.Io, conn: *db.MariaBackend) !void {
     cleanupTestRows(conn);
     defer cleanupTestRows(conn);
+
+    const database = db.AnyBackend{ .mariadb = conn };
 
     // Insert a task with last_modified=2000
     try insertTestTask(conn, "test-upsert-skip", "test-upsert-skip-title", "needsAction", 2000);
@@ -214,15 +223,15 @@ fn testUpsertSkip(io: std.Io, conn: *c.MYSQL) !void {
         .remote_id = "test-upsert-skip",
     };
 
-    const result = try db.upsertTask(io, .{ .mariadb = conn }, task);
+    const result = try db.upsertTask(io, database, task);
     if (result != .skipped) return error.TestExpectedEqual;
 }
 
-fn testTransactionCommit(io: std.Io, conn: *c.MYSQL, allocator: std.mem.Allocator) !void {
+fn testTransactionCommit(io: std.Io, conn: *db.MariaBackend, allocator: std.mem.Allocator) !void {
     cleanupTestRows(conn);
     defer cleanupTestRows(conn);
 
-    const database: db.Db = .{ .mariadb = conn };
+    const database = db.AnyBackend{ .mariadb = conn };
 
     try db.beginTransaction(database);
     try db.addTask(io, database, "test-txn-commit");
@@ -242,11 +251,11 @@ fn testTransactionCommit(io: std.Io, conn: *c.MYSQL, allocator: std.mem.Allocato
     if (!found) return error.TestExpectedEqual;
 }
 
-fn testTransactionRollback(io: std.Io, conn: *c.MYSQL, allocator: std.mem.Allocator) !void {
+fn testTransactionRollback(io: std.Io, conn: *db.MariaBackend, allocator: std.mem.Allocator) !void {
     cleanupTestRows(conn);
     defer cleanupTestRows(conn);
 
-    const database: db.Db = .{ .mariadb = conn };
+    const database = db.AnyBackend{ .mariadb = conn };
 
     try db.beginTransaction(database);
     try db.addTask(io, database, "test-txn-rollback");
@@ -264,16 +273,16 @@ fn testTransactionRollback(io: std.Io, conn: *c.MYSQL, allocator: std.mem.Alloca
     }
 }
 
-fn testSyncEndToEnd(io: std.Io, conn: *c.MYSQL, allocator: std.mem.Allocator) !void {
+fn testSyncEndToEnd(io: std.Io, conn: *db.MariaBackend, allocator: std.mem.Allocator) !void {
     cleanupTestRows(conn);
     defer cleanupTestRows(conn);
 
     // Set up local SQLite in-memory database
-    const sqlite = try db.initDb(":memory:");
-    defer db.close(.{ .sqlite = sqlite });
+    const sqlite = try db.openSqlite(allocator, ":memory:");
+    const local_db = db.AnyBackend{ .sqlite = sqlite };
+    defer db.close(local_db);
 
-    const local_db: db.Db = .{ .sqlite = sqlite };
-    const remote_db: db.Db = .{ .mariadb = conn };
+    const remote_db = db.AnyBackend{ .mariadb = conn };
 
     // Add a task to local only
     try db.addTask(io, local_db, "test-sync-local-only");
@@ -322,13 +331,13 @@ fn testSyncEndToEnd(io: std.Io, conn: *c.MYSQL, allocator: std.mem.Allocator) !v
 
 const TestEntry = struct {
     name: []const u8,
-    func: *const fn (std.Io, *c.MYSQL, std.mem.Allocator) anyerror!void,
+    func: *const fn (std.Io, *db.MariaBackend, std.mem.Allocator) anyerror!void,
 };
 
 /// Wraps a test function that doesn't need the allocator parameter.
-fn wrapNoAlloc(comptime f: fn (std.Io, *c.MYSQL) anyerror!void) *const fn (std.Io, *c.MYSQL, std.mem.Allocator) anyerror!void {
+fn wrapNoAlloc(comptime f: fn (std.Io, *db.MariaBackend) anyerror!void) *const fn (std.Io, *db.MariaBackend, std.mem.Allocator) anyerror!void {
     const S = struct {
-        fn wrapper(io: std.Io, conn: *c.MYSQL, _: std.mem.Allocator) anyerror!void {
+        fn wrapper(io: std.Io, conn: *db.MariaBackend, _: std.mem.Allocator) anyerror!void {
             return f(io, conn);
         }
     };
@@ -355,11 +364,11 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const allocator = init.arena.allocator();
 
-    const conn = getTestMariaDb() orelse {
+    const conn = getTestMariaDb(allocator) orelse {
         stdoutWrite(io, "MariaDB not available, skipping integration tests\n");
         return;
     };
-    defer db.close(.{ .mariadb = conn });
+    defer db.close(db.AnyBackend{ .mariadb = conn });
 
     var passed: usize = 0;
     var failed: usize = 0;
