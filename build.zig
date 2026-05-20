@@ -1,8 +1,10 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const is_darwin = target.result.os.tag.isDarwin();
 
     // --- C interop ---
     // Translate the C header to a Zig module, linking sqlite3, mysqlclient, and ncurses.
@@ -103,6 +105,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkSystemLibrary("sqlite3", .{});
     exe.root_module.linkSystemLibrary("mysqlclient", .{});
     exe.root_module.linkSystemLibrary("ncurses", .{});
+    if (is_darwin) exe.root_module.addCSourceFile(.{ .file = b.path("src/sqlite_helpers.c") });
 
     // yazap CLI arg parser (external dependency from build.zig.zon)
     const yazap = b.dependency("yazap", .{});
@@ -137,6 +140,7 @@ pub fn build(b: *std.Build) void {
     });
     sync_tests.root_module.linkSystemLibrary("sqlite3", .{});
     sync_tests.root_module.linkSystemLibrary("mysqlclient", .{});
+    if (is_darwin) sync_tests.root_module.addCSourceFile(.{ .file = b.path("src/sqlite_helpers.c") });
     test_step.dependOn(&b.addRunArtifact(sync_tests).step);
 
     // --- Integration tests (`zig build integration-test`) ---
@@ -161,6 +165,7 @@ pub fn build(b: *std.Build) void {
     });
     integration_exe.root_module.linkSystemLibrary("sqlite3", .{});
     integration_exe.root_module.linkSystemLibrary("mysqlclient", .{});
+    if (is_darwin) integration_exe.root_module.addCSourceFile(.{ .file = b.path("src/sqlite_helpers.c") });
     integration_test_step.dependOn(&b.addRunArtifact(integration_exe).step);
 
     // --- Convenience run step (`zig build run`) ---

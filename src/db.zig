@@ -2,6 +2,20 @@ const std = @import("std");
 const c = @import("c");
 pub const json = @import("json");
 
+const builtin = @import("builtin");
+
+// Workaround: Zig 0.16 translate-C fails on darwin when casting SQLITE_TRANSIENT (-1) to a
+// function pointer due to alignment checks on @ptrFromInt. Use a C helper on darwin only.
+extern fn sqlite3_bind_text_transient(?*c.sqlite3_stmt, c_int, [*c]const u8, c_int) c_int;
+
+fn bindTextTransient(stmt: ?*c.sqlite3_stmt, col: c_int, ptr: [*c]const u8, len: c_int) c_int {
+    if (comptime builtin.os.tag.isDarwin()) {
+        return sqlite3_bind_text_transient(stmt, col, ptr, len);
+    } else {
+        return c.sqlite3_bind_text(stmt, col, ptr, len, c.SQLITE_TRANSIENT);
+    }
+}
+
 // --- Types ---
 
 pub const SqlError = error{SqlError};
@@ -201,7 +215,7 @@ pub fn addTask(io: std.Io, database: Db, desc: []const u8) !void {
             try checkError(rc, s);
             defer _ = c.sqlite3_finalize(stmt);
 
-            _ = c.sqlite3_bind_text(stmt, 1, desc.ptr, @intCast(desc.len), c.SQLITE_TRANSIENT);
+            _ = bindTextTransient(stmt, 1, desc.ptr, @intCast(desc.len));
             const rc2 = c.sqlite3_step(stmt);
             if (rc2 != c.SQLITE_DONE) {
                 try checkError(rc2, s);
@@ -475,9 +489,9 @@ pub fn upsertTask(io: std.Io, database: Db, task: SyncTask) !UpsertResult {
 
             if (use_remote_id) {
                 const rid = task.remote_id.?;
-                _ = c.sqlite3_bind_text(check_stmt, 1, rid.ptr, @intCast(rid.len), c.SQLITE_TRANSIENT);
+                _ = bindTextTransient(check_stmt, 1, rid.ptr, @intCast(rid.len));
             } else {
-                _ = c.sqlite3_bind_text(check_stmt, 1, task.title.ptr, @intCast(task.title.len), c.SQLITE_TRANSIENT);
+                _ = bindTextTransient(check_stmt, 1, task.title.ptr, @intCast(task.title.len));
             }
             const step = c.sqlite3_step(check_stmt);
 
@@ -495,8 +509,8 @@ pub fn upsertTask(io: std.Io, database: Db, task: SyncTask) !UpsertResult {
                     try checkError(rc2, s);
                     defer _ = c.sqlite3_finalize(upd_stmt);
 
-                    _ = c.sqlite3_bind_text(upd_stmt, 1, task.title.ptr, @intCast(task.title.len), c.SQLITE_TRANSIENT);
-                    _ = c.sqlite3_bind_text(upd_stmt, 2, task.status.ptr, @intCast(task.status.len), c.SQLITE_TRANSIENT);
+                    _ = bindTextTransient(upd_stmt, 1, task.title.ptr, @intCast(task.title.len));
+                    _ = bindTextTransient(upd_stmt, 2, task.status.ptr, @intCast(task.status.len));
                     if (task.completed_time) |ct| {
                         _ = c.sqlite3_bind_int64(upd_stmt, 3, ct);
                     } else {
@@ -505,9 +519,9 @@ pub fn upsertTask(io: std.Io, database: Db, task: SyncTask) !UpsertResult {
                     _ = c.sqlite3_bind_int64(upd_stmt, 4, task.last_modified);
                     if (use_remote_id) {
                         const rid = task.remote_id.?;
-                        _ = c.sqlite3_bind_text(upd_stmt, 5, rid.ptr, @intCast(rid.len), c.SQLITE_TRANSIENT);
+                        _ = bindTextTransient(upd_stmt, 5, rid.ptr, @intCast(rid.len));
                     } else {
-                        _ = c.sqlite3_bind_text(upd_stmt, 5, task.title.ptr, @intCast(task.title.len), c.SQLITE_TRANSIENT);
+                        _ = bindTextTransient(upd_stmt, 5, task.title.ptr, @intCast(task.title.len));
                     }
 
                     const rc3 = c.sqlite3_step(upd_stmt);
@@ -526,8 +540,8 @@ pub fn upsertTask(io: std.Io, database: Db, task: SyncTask) !UpsertResult {
                 try checkError(rc2, s);
                 defer _ = c.sqlite3_finalize(ins_stmt);
 
-                _ = c.sqlite3_bind_text(ins_stmt, 1, task.title.ptr, @intCast(task.title.len), c.SQLITE_TRANSIENT);
-                _ = c.sqlite3_bind_text(ins_stmt, 2, task.status.ptr, @intCast(task.status.len), c.SQLITE_TRANSIENT);
+                _ = bindTextTransient(ins_stmt, 1, task.title.ptr, @intCast(task.title.len));
+                _ = bindTextTransient(ins_stmt, 2, task.status.ptr, @intCast(task.status.len));
                 _ = c.sqlite3_bind_int64(ins_stmt, 3, task.last_modified);
                 if (task.completed_time) |ct| {
                     _ = c.sqlite3_bind_int64(ins_stmt, 4, ct);
@@ -535,7 +549,7 @@ pub fn upsertTask(io: std.Io, database: Db, task: SyncTask) !UpsertResult {
                     _ = c.sqlite3_bind_null(ins_stmt, 4);
                 }
                 if (task.remote_id) |rid| {
-                    _ = c.sqlite3_bind_text(ins_stmt, 5, rid.ptr, @intCast(rid.len), c.SQLITE_TRANSIENT);
+                    _ = bindTextTransient(ins_stmt, 5, rid.ptr, @intCast(rid.len));
                 } else {
                     _ = c.sqlite3_bind_null(ins_stmt, 5);
                 }
@@ -776,8 +790,8 @@ pub fn setRemoteTaskId(database: Db, local_title: []const u8, remote_id: []const
             try checkError(rc, s);
             defer _ = c.sqlite3_finalize(stmt);
 
-            _ = c.sqlite3_bind_text(stmt, 1, remote_id.ptr, @intCast(remote_id.len), c.SQLITE_TRANSIENT);
-            _ = c.sqlite3_bind_text(stmt, 2, local_title.ptr, @intCast(local_title.len), c.SQLITE_TRANSIENT);
+            _ = bindTextTransient(stmt, 1, remote_id.ptr, @intCast(remote_id.len));
+            _ = bindTextTransient(stmt, 2, local_title.ptr, @intCast(local_title.len));
 
             const rc2 = c.sqlite3_step(stmt);
             if (rc2 != c.SQLITE_DONE) {
@@ -838,7 +852,7 @@ pub fn changeCompletionStatus(io: std.Io, db: Db, id_str: []const u8, complete: 
             defer _ = c.sqlite3_finalize(stmt);
 
             const statusVal: []const u8 = if (complete) "completed" else "needsAction";
-            _ = c.sqlite3_bind_text(stmt, 1, statusVal.ptr, @intCast(statusVal.len), c.SQLITE_TRANSIENT);
+            _ = bindTextTransient(stmt, 1, statusVal.ptr, @intCast(statusVal.len));
             if (complete) {
                 const ts = std.Io.Timestamp.now(io, .real);
                 const seconds = @as(i64, @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_s)));
