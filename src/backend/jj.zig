@@ -454,6 +454,15 @@ pub fn syncToRemote(self: *Self) void {
         std.log.warn("jj describe failed: {s}", .{@errorName(err)});
     };
 
+    if (!jjBookmarkExists(self.io, cwd)) {
+        std.log.warn("master@origin not found, skipping push", .{});
+        return;
+    }
+
+    jjRun(&.{ "jj", "bookmark", "set", "master", "-r", "@" }, self.io, cwd) catch |err| {
+        std.log.warn("jj bookmark set master -r @ failed: {s}", .{@errorName(err)});
+    };
+
     jjRun(&.{ "jj", "git", "push" }, self.io, cwd) catch |err| {
         std.log.warn("jj git push failed: {s}", .{@errorName(err)});
     };
