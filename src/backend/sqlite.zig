@@ -351,11 +351,8 @@ pub fn changeCompletionStatus(self: *Self, io: std.Io, id_str: []const u8, compl
     _ = c.sqlite3_bind_int64(check_stmt, 1, id);
     const check_step = c.sqlite3_step(check_stmt);
     if (check_step == c.SQLITE_DONE) {
-        var stderr_buf: [256]u8 = undefined;
-        var w = std.Io.File.stderr().writer(io, &stderr_buf);
-        w.interface.print("Error: no task found with id '{s}'.\n", .{id_str}) catch {};
-        w.interface.flush() catch {};
-        return error.SqlError;
+        std.log.err("no task found with id '{s}'", .{id_str});
+        return error.TaskNotFound;
     } else if (check_step != c.SQLITE_ROW) {
         try checkError(check_step, s);
     }

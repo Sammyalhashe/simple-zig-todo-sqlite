@@ -25,7 +25,7 @@ const TaskJson = struct {
     remote_id: ?[]const u8 = null,
 };
 
-pub const JjError = error{ JjNotFound, GitNotFound };
+pub const JjError = error{ JjNotFound, GitNotFound, SubprocessFailed };
 
 allocator: std.mem.Allocator,
 io: std.Io,
@@ -36,8 +36,8 @@ txn_snapshot: ?[]u8, // allocator-owned raw bytes for rollback
 
 pub fn init(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8) !*Self {
     // Pre-flight: check jj and git exist
-    try checkToolExists(io, "jj", error.JjNotFound);
-    try checkToolExists(io, "git", error.GitNotFound);
+    try checkToolExists(io, "jj", JjError.JjNotFound);
+    try checkToolExists(io, "git", JjError.GitNotFound);
 
     const self = try allocator.create(Self);
     errdefer allocator.destroy(self);
@@ -63,10 +63,8 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8) !*S
     };
 
     if (!file_exists) {
-        // Create file with header + empty task list
         try self.writeFileToDisk();
-        // git add so jj tracks it; error here means the file won't be VCS-tracked
-        try gitAdd(io, file_path);
+        jjTrack(io, file_path);
     } else {
         self.loadFromDisk() catch |err| {
             self.deinitTasks();
@@ -316,9 +314,8 @@ pub fn changeCompletionStatus(self: *Self, io: std.Io, id_str: []const u8, compl
             return;
         }
     }
-    // Not found
     std.log.err("no task found with id '{s}'", .{id_str});
-    return error.SqlError;
+    return error.TaskNotFound;
 }
 
 // ── Private helpers ────────────────────────────────────────────────────
@@ -337,65 +334,76 @@ fn checkToolExists(io: std.Io, tool: []const u8, err_val: JjError) JjError!void 
     }
 }
 
-fn gitAdd(io: std.Io, file_path: []const u8) !void {
-    try jjGitX("fetch", io, file_path);
-    try jjRebase(io, file_path);
+fn runSubprocess(argv: []const []const u8, io: std.Io, cwd: []const u8) JjError!void {
     var child = std.process.spawn(io, .{
-        .argv = &.{ "git", "add", file_path },
+        .argv = argv,
+        .cwd = .{ .path = cwd },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .inherit,
+    }) catch return JjError.SubprocessFailed;
+    const term = child.wait(io) catch return JjError.SubprocessFailed;
+    switch (term) {
+        .exited => |code| if (code != 0) return JjError.SubprocessFailed,
+        else => return JjError.SubprocessFailed,
+    }
+}
+
+fn jjRun(comptime argv: []const []const u8, io: std.Io, cwd: []const u8) !void {
+    comptime std.debug.assert(argv.len >= 2);
+    runSubprocess(argv, io, cwd) catch {
+        std.log.err(argv[0] ++ " " ++ argv[1] ++ " failed", .{});
+        return JjError.SubprocessFailed;
+    };
+}
+
+fn jjDescribe(io: std.Io, cwd: []const u8, message: []const u8) !void {
+    const argv: [4][]const u8 = .{ "jj", "describe", "--message", message };
+    runSubprocess(&argv, io, cwd) catch {
+        std.log.err("jj describe failed", .{});
+        return JjError.SubprocessFailed;
+    };
+}
+
+fn jjBookmarkExists(io: std.Io, cwd: []const u8) bool {
+    var child = std.process.spawn(io, .{
+        .argv = &.{ "jj", "log", "-r", "master@origin", "--no-graph", "--limit", "1" },
+        .cwd = .{ .path = cwd },
         .stdin = .ignore,
         .stdout = .ignore,
         .stderr = .ignore,
-    }) catch return error.GitNotFound;
-    const term = child.wait(io) catch return error.GitNotFound;
-    switch (term) {
-        .exited => |code| if (code != 0) {
-            std.log.err("git add '{s}' failed with exit code {d}", .{ file_path, code });
-            return error.SqlError;
-        },
-        else => return error.SqlError,
-    }
-    try jjDescribe(io, file_path);
-    try jjGitX("push", io, file_path);
+    }) catch return false;
+    const term = child.wait(io) catch return false;
+    return switch (term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
 }
 
-fn jjDescribe(io: std.Io, file_path: []const u8) !void {
-    const dir_name = std.fs.path.basename(file_path);
-    const uuid = util.generateUuidV4(io);
-    var child = std.process.spawn(io, .{ .argv = &.{ "jj", "describe", "--message", &uuid }, .cwd = .{ .path = dir_name }, .stdin = .ignore, .stderr = .ignore, .stdout = .ignore }) catch return error.GitNotFound;
-    const term = child.wait(io) catch return error.GitNotFound;
-    switch (term) {
-        .exited => |code| if (code != 0) {
-            std.log.err("git add '{s}' failed with exit code {d}", .{ file_path, code });
-            return error.SqlError;
-        },
-        else => return error.SqlError,
-    }
+fn jjTrack(io: std.Io, file_path: []const u8) void {
+    const cwd = std.fs.path.dirname(file_path) orelse ".";
+    const basename = std.fs.path.basename(file_path);
+    const argv: [4][]const u8 = .{ "jj", "file", "track", basename };
+    runSubprocess(&argv, io, cwd) catch {
+        std.log.warn("jj file track failed", .{});
+    };
 }
 
-fn jjRebase(io: std.Io, file_path: []const u8) !void {
-    const dir_name = std.fs.path.basename(file_path);
-    var child = std.process.spawn(io, .{ .argv = &.{ "jj", "rebase", "-o", "master@origin" }, .cwd = .{ .path = dir_name }, .stdin = .ignore, .stderr = .ignore, .stdout = .ignore }) catch return error.GitNotFound;
-    const term = child.wait(io) catch return error.GitNotFound;
-    switch (term) {
-        .exited => |code| if (code != 0) {
-            std.log.err("git add '{s}' failed with exit code {d}", .{ file_path, code });
-            return error.SqlError;
-        },
-        else => return error.SqlError,
-    }
-}
-
-fn jjGitX(comptime cmd: []const u8, io: std.Io, file_path: []const u8) !void {
-    const dir_name = std.fs.path.basename(file_path);
-    var child = std.process.spawn(io, .{ .argv = &.{ "jj", "git", cmd }, .cwd = .{ .path = dir_name }, .stdin = .ignore, .stderr = .ignore, .stdout = .ignore }) catch return error.GitNotFound;
-    const term = child.wait(io) catch return error.GitNotFound;
-    switch (term) {
-        .exited => |code| if (code != 0) {
-            std.log.err("git add '{s}' failed with exit code {d}", .{ file_path, code });
-            return error.SqlError;
-        },
-        else => return error.SqlError,
-    }
+fn makeCommitMessage(io: std.Io, buf: *[64]u8) []const u8 {
+    const ts = std.Io.Timestamp.now(io, .real);
+    const epoch_secs: u64 = @intCast(@max(0, @divTrunc(ts.nanoseconds, std.time.ns_per_s)));
+    const es = std.time.epoch.EpochSeconds{ .secs = epoch_secs };
+    const epoch_day = es.getEpochDay();
+    const yd = epoch_day.calculateYearDay();
+    const md = yd.calculateMonthDay();
+    const ds = es.getDaySeconds();
+    return std.fmt.bufPrint(buf, "todo: sync {d}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}", .{
+        yd.year,
+        md.month.numeric(),
+        @as(u32, md.day_index) + 1,
+        ds.getHoursIntoDay(),
+        ds.getMinutesIntoHour(),
+    }) catch unreachable;
 }
 
 fn deinitTasks(self: *Self) void {
@@ -409,8 +417,6 @@ fn deinitTasks(self: *Self) void {
 }
 
 fn writeFileToDisk(self: *Self) !void {
-    try jjGitX("fetch", self.io, self.file_path);
-    try jjRebase(self.io, self.file_path);
     const bytes = try self.serializeToBytes();
     defer self.allocator.free(bytes);
 
@@ -424,8 +430,33 @@ fn writeFileToDisk(self: *Self) !void {
     try f.sync(self.io);
     f.close(self.io);
     try std.Io.Dir.rename(dir, tmp_path, dir, self.file_path, self.io);
-    try jjDescribe(self.io, self.file_path);
-    try jjGitX("push", self.io, self.file_path);
+}
+
+pub fn syncToRemote(self: *Self) void {
+    const cwd = std.fs.path.dirname(self.file_path) orelse ".";
+
+    jjRun(&.{ "jj", "git", "fetch" }, self.io, cwd) catch |err| {
+        std.log.warn("jj git fetch failed: {s}", .{@errorName(err)});
+        return;
+    };
+
+    if (jjBookmarkExists(self.io, cwd)) {
+        jjRun(&.{ "jj", "rebase", "-d", "master@origin" }, self.io, cwd) catch |err| {
+            std.log.warn("jj rebase failed: {s}", .{@errorName(err)});
+        };
+    } else {
+        std.log.warn("master@origin not found, skipping rebase", .{});
+    }
+
+    var msg_buf: [64]u8 = undefined;
+    const message = makeCommitMessage(self.io, &msg_buf);
+    jjDescribe(self.io, cwd, message) catch |err| {
+        std.log.warn("jj describe failed: {s}", .{@errorName(err)});
+    };
+
+    jjRun(&.{ "jj", "git", "push" }, self.io, cwd) catch |err| {
+        std.log.warn("jj git push failed: {s}", .{@errorName(err)});
+    };
 }
 
 fn loadFromDisk(self: *Self) !void {
@@ -471,7 +502,10 @@ fn loadFromDisk(self: *Self) !void {
 }
 
 fn maybeFlush(self: *Self) !void {
-    if (!self.in_transaction) try self.writeFileToDisk();
+    if (!self.in_transaction) {
+        try self.writeFileToDisk();
+        self.syncToRemote();
+    }
 }
 
 fn serializeToBytes(self: *Self) ![]u8 {

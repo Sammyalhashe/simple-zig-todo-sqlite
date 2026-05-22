@@ -451,11 +451,8 @@ pub fn changeCompletionStatus(self: *Self, io: std.Io, id_str: []const u8, compl
     }
 
     if (c.mysql_stmt_num_rows(check_stmt) == 0) {
-        var stderr_buf: [256]u8 = undefined;
-        var w = std.Io.File.stderr().writer(io, &stderr_buf);
-        w.interface.print("Error: no task found with id '{s}'.\n", .{id_str}) catch {};
-        w.interface.flush() catch {};
-        return error.SqlError;
+        std.log.err("no task found with id '{s}'", .{id_str});
+        return error.TaskNotFound;
     }
 
     // Task exists — proceed with UPDATE

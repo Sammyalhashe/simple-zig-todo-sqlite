@@ -2,6 +2,7 @@ const std = @import("std");
 pub const json = @import("json");
 
 pub const SqlError = error{SqlError};
+pub const TaskNotFound = error{TaskNotFound};
 
 pub const Task = json.Task;
 
