@@ -228,7 +228,7 @@ fn runSync(
     }
 
     _ = sync.syncTasks(io, local_db, remote_db, direction, dry_run, arena) catch |err| {
-        std.log.err("sync failed: {s}", .{@errorName(err)});
+        std.log.err("syncTasks: {s}", .{@errorName(err)});
         return;
     };
 
