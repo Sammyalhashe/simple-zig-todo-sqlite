@@ -175,6 +175,7 @@ fn testUpsertInsert(io: std.Io, conn: *db.MariaBackend) !void {
         .completed_time = null,
         .is_deleted = false,
         .remote_id = null,
+        .due_time = 0,
     };
 
     const result = try db.upsertTask(io, database, task);
@@ -198,6 +199,7 @@ fn testUpsertUpdate(io: std.Io, conn: *db.MariaBackend) !void {
         .completed_time = 2000,
         .is_deleted = false,
         .remote_id = "test-upsert-upd",
+        .due_time = 0,
     };
 
     const result = try db.upsertTask(io, database, task);
@@ -221,6 +223,7 @@ fn testUpsertSkip(io: std.Io, conn: *db.MariaBackend) !void {
         .completed_time = 1000,
         .is_deleted = false,
         .remote_id = "test-upsert-skip",
+        .due_time = 0,
     };
 
     const result = try db.upsertTask(io, database, task);

@@ -306,7 +306,7 @@ pub fn syncTasks(
 
 const make_task = struct {
     fn f(lm: i64) db.SyncTask {
-        return .{ .title = "test", .status = "needsAction", .last_modified = lm, .completed_time = null, .is_deleted = false };
+        return .{ .title = "test", .status = "needsAction", .last_modified = lm, .completed_time = null, .is_deleted = false, .due_time = 0 };
     }
 }.f;
 

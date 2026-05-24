@@ -83,6 +83,8 @@ echo "Applying schema relaxations..."
 mariadb --socket="$TEST_MARIADB_SOCKET" <<'SQL'
 ALTER TABLE supernotedb.t_schedule_task MODIFY user_id bigint(20) NOT NULL DEFAULT 0;
 ALTER TABLE supernotedb.t_schedule_task MODIFY due_time bigint(20) NOT NULL DEFAULT 0;
+-- Seed a default user so getDefaultUser() finds a row
+INSERT IGNORE INTO supernotedb.u_user (user_id, user_name, email, sex, password, create_time, update_time, is_normal) VALUES (1, 'test_user', 'test@test.com', '1', 'test', NOW(), NOW(), 'Y');
 SQL
 
 echo ""
