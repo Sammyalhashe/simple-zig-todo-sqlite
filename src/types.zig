@@ -12,6 +12,7 @@ pub const SyncTask = struct {
     last_modified: i64,
     completed_time: ?i64,
     is_deleted: bool,
+    due_time: i64,
     remote_id: ?[]const u8 = null,
 };
 

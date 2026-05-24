@@ -7,6 +7,7 @@ const Self = @This();
 
 allocator: std.mem.Allocator,
 handle: *c.MYSQL,
+user_id: ?u64,
 
 fn validateIdStr(id_str: []const u8) !void {
     if (id_str.len == 0 or id_str.len > 255) return error.SqlError;
@@ -18,6 +19,32 @@ fn validateIdStr(id_str: []const u8) !void {
                 return error.SqlError;
             },
         }
+    }
+}
+
+fn getDefaultUser(self: *Self) !void {
+    const m = self.handle;
+
+    const select_user_sql = "SELECT user_id from u_user LIMIT 1";
+
+    if (c.mysql_query(m, select_user_sql) != 0) {
+        std.log.err("MariaDB query error: {s}", .{c.mysql_error(m)});
+        return error.SqlError;
+    }
+
+    const result = c.mysql_store_result(m) orelse {
+        std.log.err("MariaDB store_result error: {s}", .{c.mysql_error(m)});
+        return error.SqlError;
+    };
+    defer c.mysql_free_result(result);
+
+    while (c.mysql_fetch_row(result)) |row| {
+        self.user_id = if (row[0] != null) try std.fmt.parseInt(u64, std.mem.span(row[0]), 10) else null;
+    }
+
+    if (self.user_id == null) {
+        std.log.err("Could not infer default user, please provide", .{});
+        return error.SqlError;
     }
 }
 
@@ -33,7 +60,11 @@ pub fn init(allocator: std.mem.Allocator, host: []const u8, port: u16, password:
     self.* = .{
         .allocator = allocator,
         .handle = conn,
+        .user_id = null,
     };
+
+    try self.getDefaultUser();
+
     return self;
 }
 
@@ -68,7 +99,7 @@ pub fn addTask(self: *Self, io: std.Io, desc: []const u8) !void {
     const uuid = util.generateUuidV4(io);
     const task_id: []const u8 = &uuid;
 
-    const ins_sql = "INSERT INTO supernotedb.t_schedule_task (task_id, title, status, last_modified, is_deleted) VALUES (?, ?, 'needsAction', UNIX_TIMESTAMP(), 'N')";
+    const ins_sql = "INSERT INTO supernotedb.t_schedule_task (user_id, task_id, title, status, last_modified, due_time, is_deleted) VALUES (?, ?, ?, 'needsAction', UNIX_TIMESTAMP(), 0, 'N')";
     const ins_stmt = c.mysql_stmt_init(m) orelse return error.SqlError;
     defer _ = c.mysql_stmt_close(ins_stmt);
 
@@ -79,8 +110,19 @@ pub fn addTask(self: *Self, io: std.Io, desc: []const u8) !void {
 
     var task_id_len: c_ulong = @intCast(uuid.len);
     var desc_len: c_ulong = @intCast(desc.len);
+    var due_time_value: i64 = 0;
 
-    var ins_binds = [2]c.MYSQL_BIND{
+    var result_is_null: c.my_bool = 0;
+    var result_len: c_ulong = 0;
+
+    var ins_binds = [4]c.MYSQL_BIND{
+        .{
+            .buffer_type = c.MYSQL_TYPE_LONGLONG,
+            .buffer = @ptrCast(&self.user_id),
+            .buffer_length = @sizeOf(f64),
+            .is_null = &result_is_null,
+            .length = &result_len,
+        },
         .{
             .buffer_type = c.MYSQL_TYPE_STRING,
             .buffer = @ptrCast(@constCast(task_id.ptr)),
@@ -92,6 +134,11 @@ pub fn addTask(self: *Self, io: std.Io, desc: []const u8) !void {
             .buffer = @ptrCast(@constCast(desc.ptr)),
             .buffer_length = @intCast(desc.len),
             .length = &desc_len,
+        },
+        .{
+            .buffer_type = c.MYSQL_TYPE_LONGLONG,
+            .buffer = @ptrCast(&due_time_value),
+            .buffer_length = @sizeOf(i64),
         },
     };
 
@@ -159,7 +206,7 @@ pub fn queryAllTasksForSync(self: *Self, allocator: std.mem.Allocator) !std.Arra
     }
     const m = self.handle;
 
-    const sync_query = "SELECT title, status, last_modified, completed_time, is_deleted, task_id FROM supernotedb.t_schedule_task WHERE is_deleted != 'Y';";
+    const sync_query = "SELECT title, status, last_modified, due_time, completed_time, is_deleted, task_id FROM supernotedb.t_schedule_task WHERE is_deleted != 'Y';";
     if (c.mysql_query(m, sync_query) != 0) {
         std.log.err("MariaDB query error: {s}", .{c.mysql_error(m)});
         return error.SqlError;
@@ -176,13 +223,15 @@ pub fn queryAllTasksForSync(self: *Self, allocator: std.mem.Allocator) !std.Arra
         const status_raw = if (row[1] != null) std.mem.span(row[1]) else "";
         const lm_str = if (row[2] != null) std.mem.span(row[2]) else "0";
         const last_modified = std.fmt.parseInt(i64, lm_str, 10) catch 0;
-        const completed_time: ?i64 = if (row[3] != null) blk: {
-            const ct_str = std.mem.span(row[3]);
+        const due_time_str = if (row[3] != null) std.mem.span(row[3]) else "0";
+        const due_time = std.fmt.parseInt(i64, due_time_str, 10) catch 0;
+        const completed_time: ?i64 = if (row[4] != null) blk: {
+            const ct_str = std.mem.span(row[4]);
             break :blk std.fmt.parseInt(i64, ct_str, 10) catch null;
         } else null;
-        const deleted_str = if (row[4] != null) std.mem.span(row[4]) else "N";
+        const deleted_str = if (row[5] != null) std.mem.span(row[5]) else "N";
         const is_deleted = std.mem.eql(u8, deleted_str, "Y");
-        const remote_id_raw: ?[]const u8 = if (row[5] != null) std.mem.span(row[5]) else null;
+        const remote_id_raw: ?[]const u8 = if (row[6] != null) std.mem.span(row[6]) else null;
 
         const title = try allocator.dupe(u8, title_raw);
         errdefer allocator.free(title);
@@ -195,6 +244,7 @@ pub fn queryAllTasksForSync(self: *Self, allocator: std.mem.Allocator) !std.Arra
             .title = title,
             .status = status,
             .last_modified = last_modified,
+            .due_time = due_time,
             .completed_time = completed_time,
             .is_deleted = is_deleted,
             .remote_id = remote_id,
@@ -337,7 +387,7 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask) !types.UpsertRe
         const uuid = util.generateUuidV4(io);
         const task_id: []const u8 = &uuid;
 
-        const ins_sql = "INSERT INTO supernotedb.t_schedule_task (task_id, title, status, last_modified, completed_time, is_deleted) VALUES (?, ?, ?, ?, ?, 'N')";
+        const ins_sql = "INSERT INTO supernotedb.t_schedule_task (user_id, task_id, title, status, last_modified, due_time, completed_time, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, 'N')";
         const ins_stmt = c.mysql_stmt_init(m);
         if (ins_stmt == null) return error.SqlError;
         defer _ = c.mysql_stmt_close(ins_stmt);
@@ -351,10 +401,18 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask) !types.UpsertRe
         var ins_title_len: c_ulong = @intCast(task.title.len);
         var ins_status_len: c_ulong = @intCast(task.status.len);
         var ins_lm_value: i64 = task.last_modified;
+        var ins_due_value: i64 = task.due_time;
         var ins_ct_value: i64 = task.completed_time orelse 0;
         var ins_ct_is_null: c.my_bool = if (task.completed_time == null) 1 else 0;
 
-        var ins_binds = [5]c.MYSQL_BIND{
+        var ins_binds = [7]c.MYSQL_BIND{
+            .{
+                .buffer_type = c.MYSQL_TYPE_LONGLONG,
+                .buffer = @ptrCast(&self.user_id),
+                .buffer_length = @sizeOf(f64),
+                .is_null = &result_is_null,
+                .length = &result_len,
+            },
             .{
                 .buffer_type = c.MYSQL_TYPE_STRING,
                 .buffer = @ptrCast(@constCast(task_id.ptr)),
@@ -376,6 +434,11 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask) !types.UpsertRe
             .{
                 .buffer_type = c.MYSQL_TYPE_LONGLONG,
                 .buffer = @ptrCast(&ins_lm_value),
+                .buffer_length = @sizeOf(i64),
+            },
+            .{
+                .buffer_type = c.MYSQL_TYPE_LONGLONG,
+                .buffer = @ptrCast(&ins_due_value),
                 .buffer_length = @sizeOf(i64),
             },
             .{

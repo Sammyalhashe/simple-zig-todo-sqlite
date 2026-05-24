@@ -198,6 +198,7 @@ pub fn syncTasks(
                             .title = local_task.title,
                             .status = local_task.status,
                             .last_modified = local_task.last_modified,
+                            .due_time = local_task.due_time,
                             .completed_time = local_task.completed_time,
                             .is_deleted = local_task.is_deleted,
                             .remote_id = remote_match.?.remote_id,

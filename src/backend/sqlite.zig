@@ -40,7 +40,7 @@ pub fn init(allocator: std.mem.Allocator, dbPath: [:0]const u8) !*Self {
     }
     try checkError(rc, db);
 
-    const createTable = "CREATE TABLE IF NOT EXISTS tasks (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  title TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT 'needsAction',\n  last_modified INTEGER NOT NULL DEFAULT (strftime('%s','now')),\n  is_deleted TEXT NOT NULL DEFAULT 'N',\n  completed_time INTEGER\n)";
+    const createTable = "CREATE TABLE IF NOT EXISTS tasks (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  title TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT 'needsAction',\n  last_modified INTEGER NOT NULL DEFAULT (strftime('%s','now')),\n  due_time INTEGER NOT NULL DEFAULT 0,\n  is_deleted TEXT NOT NULL DEFAULT 'N',\n  completed_time INTEGER\n)";
     var errMsg: [*c]u8 = null;
     const rc2 = c.sqlite3_exec(db, createTable, null, null, &errMsg);
     if (rc2 != c.SQLITE_OK) {
@@ -52,6 +52,9 @@ pub fn init(allocator: std.mem.Allocator, dbPath: [:0]const u8) !*Self {
 
     // Migration: add remote_task_id column for sync identity tracking.
     _ = c.sqlite3_exec(db, "ALTER TABLE tasks ADD COLUMN remote_task_id TEXT", null, null, null);
+
+    // Migration: add due_time column for deadline tracking.
+    _ = c.sqlite3_exec(db, "ALTER TABLE tasks ADD COLUMN due_time INTEGER NOT NULL DEFAULT 0", null, null, null);
 
     // Enforce at most one local row per remote identity.
     const idx_rc = c.sqlite3_exec(db, "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_remote_task_id ON tasks(remote_task_id) WHERE remote_task_id IS NOT NULL;", null, null, null);
@@ -183,7 +186,7 @@ pub fn queryAllTasksForSync(self: *Self, allocator: std.mem.Allocator) !std.Arra
     const s = self.handle;
 
     var stmt: ?*c.sqlite3_stmt = null;
-    const sql = "SELECT title, status, last_modified, completed_time, is_deleted, remote_task_id FROM tasks WHERE is_deleted != 'Y';";
+    const sql = "SELECT title, status, last_modified, due_time, completed_time, is_deleted, remote_task_id FROM tasks WHERE is_deleted != 'Y';";
     const rc = c.sqlite3_prepare_v2(s, sql, @intCast(sql.len + 1), &stmt, null);
     try checkError(rc, s);
     defer _ = c.sqlite3_finalize(stmt);
@@ -196,14 +199,15 @@ pub fn queryAllTasksForSync(self: *Self, allocator: std.mem.Allocator) !std.Arra
             const statusPtr = c.sqlite3_column_text(stmt, 1);
             const status_raw = if (statusPtr) |p| std.mem.span(p) else "";
             const last_modified = c.sqlite3_column_int64(stmt, 2);
-            const completed_time: ?i64 = if (c.sqlite3_column_type(stmt, 3) == c.SQLITE_NULL)
+            const due_time = c.sqlite3_column_int64(stmt, 3);
+            const completed_time: ?i64 = if (c.sqlite3_column_type(stmt, 4) == c.SQLITE_NULL)
                 null
             else
-                c.sqlite3_column_int64(stmt, 3);
-            const deletedPtr = c.sqlite3_column_text(stmt, 4);
+                c.sqlite3_column_int64(stmt, 4);
+            const deletedPtr = c.sqlite3_column_text(stmt, 5);
             const deleted_str = if (deletedPtr) |p| std.mem.span(p) else "N";
             const is_deleted = std.mem.eql(u8, deleted_str, "Y");
-            const remoteIdPtr = c.sqlite3_column_text(stmt, 5);
+            const remoteIdPtr = c.sqlite3_column_text(stmt, 6);
             const remote_id_raw: ?[]const u8 = if (remoteIdPtr) |p| std.mem.span(p) else null;
 
             const title = try allocator.dupe(u8, title_raw);
@@ -217,6 +221,7 @@ pub fn queryAllTasksForSync(self: *Self, allocator: std.mem.Allocator) !std.Arra
                 .title = title,
                 .status = status,
                 .last_modified = last_modified,
+                .due_time = due_time,
                 .completed_time = completed_time,
                 .is_deleted = is_deleted,
                 .remote_id = remote_id,
@@ -291,7 +296,7 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask) !types.UpsertRe
         }
     } else if (step == c.SQLITE_DONE) {
         var ins_stmt: ?*c.sqlite3_stmt = null;
-        const ins_sql = "INSERT INTO tasks (title, status, last_modified, completed_time, is_deleted, remote_task_id) VALUES (?, ?, ?, ?, 'N', ?);";
+        const ins_sql = "INSERT INTO tasks (title, status, last_modified, due_time, completed_time, is_deleted, remote_task_id) VALUES (?, ?, ?, ?, ?, 'N', ?);";
         const rc2 = c.sqlite3_prepare_v2(s, ins_sql, @intCast(ins_sql.len + 1), &ins_stmt, null);
         try checkError(rc2, s);
         defer _ = c.sqlite3_finalize(ins_stmt);
@@ -299,15 +304,16 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask) !types.UpsertRe
         _ = bindTextTransient(ins_stmt, 1, task.title.ptr, @intCast(task.title.len));
         _ = bindTextTransient(ins_stmt, 2, task.status.ptr, @intCast(task.status.len));
         _ = c.sqlite3_bind_int64(ins_stmt, 3, task.last_modified);
+        _ = c.sqlite3_bind_int64(ins_stmt, 4, task.due_time);
         if (task.completed_time) |ct| {
-            _ = c.sqlite3_bind_int64(ins_stmt, 4, ct);
-        } else {
-            _ = c.sqlite3_bind_null(ins_stmt, 4);
-        }
-        if (task.remote_id) |rid| {
-            _ = bindTextTransient(ins_stmt, 5, rid.ptr, @intCast(rid.len));
+            _ = c.sqlite3_bind_int64(ins_stmt, 5, ct);
         } else {
             _ = c.sqlite3_bind_null(ins_stmt, 5);
+        }
+        if (task.remote_id) |rid| {
+            _ = bindTextTransient(ins_stmt, 6, rid.ptr, @intCast(rid.len));
+        } else {
+            _ = c.sqlite3_bind_null(ins_stmt, 6);
         }
 
         const rc3 = c.sqlite3_step(ins_stmt);

@@ -9,6 +9,7 @@ const StoredTask = struct {
     title: []const u8,
     status: []const u8,
     last_modified: i64,
+    due_time: i64,
     completed_time: ?i64,
     is_deleted: bool,
     remote_id: ?[]const u8,
@@ -20,6 +21,7 @@ const TaskJson = struct {
     title: []const u8,
     status: []const u8,
     last_modified: i64,
+    due_time: i64 = 0,
     completed_time: ?i64 = null,
     is_deleted: bool,
     remote_id: ?[]const u8 = null,
@@ -144,6 +146,7 @@ pub fn addTask(self: *Self, io: std.Io, desc: []const u8) !void {
         .title = title,
         .status = status,
         .last_modified = now,
+        .due_time = 0,
         .completed_time = null,
         .is_deleted = false,
         .remote_id = null,
@@ -197,6 +200,7 @@ pub fn queryAllTasksForSync(self: *Self, allocator: std.mem.Allocator) !std.Arra
             .title = title,
             .status = status,
             .last_modified = task.last_modified,
+            .due_time = task.due_time,
             .completed_time = task.completed_time,
             .is_deleted = task.is_deleted,
             .remote_id = remote_id,
@@ -251,6 +255,7 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask) !types.UpsertRe
             existing.title = new_title;
             existing.status = new_status;
             existing.last_modified = task.last_modified;
+            existing.due_time = task.due_time;
             existing.completed_time = task.completed_time;
             existing.remote_id = new_remote_id;
 
@@ -276,6 +281,7 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask) !types.UpsertRe
             .title = title,
             .status = status,
             .last_modified = task.last_modified,
+            .due_time = task.due_time,
             .completed_time = task.completed_time,
             .is_deleted = false,
             .remote_id = remote_id,
@@ -503,6 +509,7 @@ fn loadFromDisk(self: *Self) !void {
             .title = title,
             .status = status,
             .last_modified = v.last_modified,
+            .due_time = v.due_time,
             .completed_time = v.completed_time,
             .is_deleted = v.is_deleted,
             .remote_id = remote_id,
@@ -540,6 +547,9 @@ fn appendTaskJson(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, task: S
     var num_buf: [32]u8 = undefined;
     const lm_str = std.fmt.bufPrint(&num_buf, "{d}", .{task.last_modified}) catch unreachable;
     try buf.appendSlice(allocator, lm_str);
+    try buf.appendSlice(allocator, ",\"due_time\":");
+    const dt_str = std.fmt.bufPrint(&num_buf, "{d}", .{task.due_time}) catch unreachable;
+    try buf.appendSlice(allocator, dt_str);
     try buf.appendSlice(allocator, ",\"completed_time\":");
     if (task.completed_time) |ct| {
         const ct_str = std.fmt.bufPrint(&num_buf, "{d}", .{ct}) catch unreachable;
