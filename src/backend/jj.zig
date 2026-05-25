@@ -132,7 +132,7 @@ pub fn addTask(self: *Self, io: std.Io, desc: []const u8) !void {
     if (!std.unicode.utf8ValidateSlice(desc)) return error.InvalidUtf8;
     const uuid = util.generateUuidV4(io);
     const ts = std.Io.Timestamp.now(io, .real);
-    const now = @as(i64, @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_s)));
+    const now = @as(i64, @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_ms)));
 
     const id = try self.allocator.dupe(u8, &uuid);
     errdefer self.allocator.free(id);
@@ -209,7 +209,7 @@ pub fn queryAllTasksForSync(self: *Self, allocator: std.mem.Allocator) !std.Arra
     return result;
 }
 
-pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask) !types.UpsertResult {
+pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask, allocator: std.mem.Allocator) !types.UpsertResultWithId {
     if (!std.unicode.utf8ValidateSlice(task.title)) return error.InvalidUtf8;
     if (task.remote_id) |r| if (!std.unicode.utf8ValidateSlice(r)) return error.InvalidUtf8;
     // Look for existing: prefer remote_id match, fall back to title match
@@ -260,9 +260,15 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask) !types.UpsertRe
             existing.remote_id = new_remote_id;
 
             try self.maybeFlush();
-            return .updated;
+            return .{
+                .result = .updated,
+                .task_id = if (task.remote_id) |r| try allocator.dupe(u8, r) else try allocator.dupe(u8, task.title),
+            };
         } else {
-            return .skipped;
+            return .{
+                .result = .skipped,
+                .task_id = try allocator.dupe(u8, "0"),
+            };
         }
     } else {
         // Insert new
@@ -287,7 +293,10 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask) !types.UpsertRe
             .remote_id = remote_id,
         });
         try self.maybeFlush();
-        return .inserted;
+        return .{
+            .result = .inserted,
+            .task_id = try allocator.dupe(u8, id),
+        };
     }
 }
 
@@ -312,7 +321,7 @@ pub fn changeCompletionStatus(self: *Self, io: std.Io, id_str: []const u8, compl
             task.status = new_status;
 
             const ts = std.Io.Timestamp.now(io, .real);
-            const now = @as(i64, @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_s)));
+            const now = @as(i64, @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_ms)));
             task.last_modified = now;
             task.completed_time = if (complete) now else null;
 
@@ -333,7 +342,7 @@ pub fn deleteTask(self: *Self, io: std.Io, id_str: []const u8) !void {
             }
             task.is_deleted = true;
             const ts = std.Io.Timestamp.now(io, .real);
-            const now = @as(i64, @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_s)));
+            const now = @as(i64, @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_ms)));
             task.last_modified = now;
             try self.maybeFlush();
             return;

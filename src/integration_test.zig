@@ -163,7 +163,7 @@ fn testChangeCompletionStatus(io: std.Io, conn: *db.MariaBackend, allocator: std
     return error.TestUnexpectedResult;
 }
 
-fn testUpsertInsert(io: std.Io, conn: *db.MariaBackend) !void {
+fn testUpsertInsert(io: std.Io, conn: *db.MariaBackend, allocator: std.mem.Allocator) !void {
     cleanupTestRows(conn);
     defer cleanupTestRows(conn);
 
@@ -178,11 +178,11 @@ fn testUpsertInsert(io: std.Io, conn: *db.MariaBackend) !void {
         .due_time = 0,
     };
 
-    const result = try db.upsertTask(io, database, task);
-    if (result != .inserted) return error.TestExpectedEqual;
+    const result = try db.upsertTask(io, database, task, allocator);
+    if (result.result != .inserted) return error.TestExpectedEqual;
 }
 
-fn testUpsertUpdate(io: std.Io, conn: *db.MariaBackend) !void {
+fn testUpsertUpdate(io: std.Io, conn: *db.MariaBackend, allocator: std.mem.Allocator) !void {
     cleanupTestRows(conn);
     defer cleanupTestRows(conn);
 
@@ -202,11 +202,11 @@ fn testUpsertUpdate(io: std.Io, conn: *db.MariaBackend) !void {
         .due_time = 0,
     };
 
-    const result = try db.upsertTask(io, database, task);
-    if (result != .updated) return error.TestExpectedEqual;
+    const result = try db.upsertTask(io, database, task, allocator);
+    if (result.result != .updated) return error.TestExpectedEqual;
 }
 
-fn testUpsertSkip(io: std.Io, conn: *db.MariaBackend) !void {
+fn testUpsertSkip(io: std.Io, conn: *db.MariaBackend, allocator: std.mem.Allocator) !void {
     cleanupTestRows(conn);
     defer cleanupTestRows(conn);
 
@@ -226,8 +226,8 @@ fn testUpsertSkip(io: std.Io, conn: *db.MariaBackend) !void {
         .due_time = 0,
     };
 
-    const result = try db.upsertTask(io, database, task);
-    if (result != .skipped) return error.TestExpectedEqual;
+    const result = try db.upsertTask(io, database, task, allocator);
+    if (result.result != .skipped) return error.TestExpectedEqual;
 }
 
 fn testTransactionCommit(io: std.Io, conn: *db.MariaBackend, allocator: std.mem.Allocator) !void {
@@ -347,13 +347,23 @@ fn wrapNoAlloc(comptime f: fn (std.Io, *db.MariaBackend) anyerror!void) *const f
     return &S.wrapper;
 }
 
+/// Wraps a test function that needs the allocator parameter.
+fn wrapWithAlloc(comptime f: fn (std.Io, *db.MariaBackend, std.mem.Allocator) anyerror!void) *const fn (std.Io, *db.MariaBackend, std.mem.Allocator) anyerror!void {
+    const S = struct {
+        fn wrapper(io: std.Io, conn: *db.MariaBackend, alloc: std.mem.Allocator) anyerror!void {
+            return f(io, conn, alloc);
+        }
+    };
+    return &S.wrapper;
+}
+
 const tests = [_]TestEntry{
     .{ .name = "mariadb: addTask inserts a row", .func = testAddTask },
     .{ .name = "mariadb: queryTasks returns tasks", .func = testQueryTasks },
     .{ .name = "mariadb: changeCompletionStatus", .func = testChangeCompletionStatus },
-    .{ .name = "mariadb: upsertTask inserts new", .func = wrapNoAlloc(testUpsertInsert) },
-    .{ .name = "mariadb: upsertTask updates newer", .func = wrapNoAlloc(testUpsertUpdate) },
-    .{ .name = "mariadb: upsertTask skips older", .func = wrapNoAlloc(testUpsertSkip) },
+    .{ .name = "mariadb: upsertTask inserts new", .func = wrapWithAlloc(testUpsertInsert) },
+    .{ .name = "mariadb: upsertTask updates newer", .func = wrapWithAlloc(testUpsertUpdate) },
+    .{ .name = "mariadb: upsertTask skips older", .func = wrapWithAlloc(testUpsertSkip) },
     .{ .name = "mariadb: transaction commit", .func = testTransactionCommit },
     .{ .name = "mariadb: transaction rollback", .func = testTransactionRollback },
     .{ .name = "mariadb: syncTasks end-to-end", .func = testSyncEndToEnd },

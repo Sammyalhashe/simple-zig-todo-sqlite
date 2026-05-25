@@ -17,3 +17,8 @@ pub const SyncTask = struct {
 };
 
 pub const UpsertResult = enum { inserted, updated, skipped };
+
+pub const UpsertResultWithId = struct {
+    result: UpsertResult,
+    task_id: []const u8,
+};
