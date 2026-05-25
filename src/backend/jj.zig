@@ -324,6 +324,25 @@ pub fn changeCompletionStatus(self: *Self, io: std.Io, id_str: []const u8, compl
     return error.TaskNotFound;
 }
 
+pub fn deleteTask(self: *Self, io: std.Io, id_str: []const u8) !void {
+    for (self.tasks.items) |*task| {
+        if (std.mem.eql(u8, task.id, id_str)) {
+            if (task.is_deleted) {
+                std.log.err("task '{s}' is already deleted.", .{id_str});
+                return error.TaskNotFound;
+            }
+            task.is_deleted = true;
+            const ts = std.Io.Timestamp.now(io, .real);
+            const now = @as(i64, @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_s)));
+            task.last_modified = now;
+            try self.maybeFlush();
+            return;
+        }
+    }
+    std.log.err("no task found with id '{s}'", .{id_str});
+    return error.TaskNotFound;
+}
+
 // ── Private helpers ────────────────────────────────────────────────────
 
 fn checkToolExists(io: std.Io, tool: []const u8, err_val: JjError) JjError!void {
@@ -395,6 +414,24 @@ fn jjTrack(io: std.Io, file_path: []const u8) void {
     };
 }
 
+fn jjHasChanges(io: std.Io, cwd: []const u8) bool {
+    // Check if there are any changes in the jj workspace
+    const argv: [3][]const u8 = .{ "jj", "diff", "--no-graph" };
+    var child = std.process.spawn(io, .{
+        .argv = &argv,
+        .cwd = .{ .path = cwd },
+        .stdin = .ignore,
+        .stdout = .ignore, // We don't need the output, just the exit code
+        .stderr = .ignore,
+    }) catch return false; // If spawn fails, assume no changes to be safe
+    
+    const term = child.wait(io) catch return false;
+    return switch (term) {
+        .exited => |code| code == 0, // jj diff exits with 0 if no changes, non-zero if changes
+        else => false,
+    };
+}
+
 fn makeCommitMessage(io: std.Io, buf: *[64]u8) []const u8 {
     const ts = std.Io.Timestamp.now(io, .real);
     const epoch_secs: u64 = @intCast(@max(0, @divTrunc(ts.nanoseconds, std.time.ns_per_s)));
@@ -454,11 +491,16 @@ pub fn syncToRemote(self: *Self) void {
         std.log.warn("master@origin not found, skipping rebase", .{});
     }
 
-    var msg_buf: [64]u8 = undefined;
-    const message = makeCommitMessage(self.io, &msg_buf);
-    jjDescribe(self.io, cwd, message) catch |err| {
-        std.log.warn("jj describe failed: {s}", .{@errorName(err)});
-    };
+    // Skip creating a new commit if there are no changes
+    if (jjHasChanges(self.io, cwd)) {
+        var msg_buf: [64]u8 = undefined;
+        const message = makeCommitMessage(self.io, &msg_buf);
+        jjDescribe(self.io, cwd, message) catch |err| {
+            std.log.warn("jj describe failed: {s}", .{@errorName(err)});
+        };
+    } else {
+        std.log.debug("no changes detected, skipping jj describe", .{});
+    }
 
     if (!jjBookmarkExists(self.io, cwd)) {
         std.log.warn("master@origin not found, skipping push", .{});

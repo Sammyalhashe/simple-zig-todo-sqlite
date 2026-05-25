@@ -385,3 +385,37 @@ pub fn changeCompletionStatus(self: *Self, io: std.Io, id_str: []const u8, compl
         try checkError(rc2, s);
     }
 }
+
+pub fn deleteTask(self: *Self, io: std.Io, id_str: []const u8) !void {
+    _ = io;
+    const s = self.handle;
+    const id = try std.fmt.parseInt(i64, id_str, 10);
+
+    // Check existence first
+    var check_stmt: ?*c.sqlite3_stmt = null;
+    const check_sql = "SELECT 1 FROM tasks WHERE id = ?;";
+    const check_rc = c.sqlite3_prepare_v2(s, check_sql, @intCast(check_sql.len + 1), &check_stmt, null);
+    try checkError(check_rc, s);
+    defer _ = c.sqlite3_finalize(check_stmt);
+    _ = c.sqlite3_bind_int64(check_stmt, 1, id);
+    const check_step = c.sqlite3_step(check_stmt);
+    if (check_step == c.SQLITE_DONE) {
+        std.log.err("no task found with id '{s}'", .{id_str});
+        return error.TaskNotFound;
+    } else if (check_step != c.SQLITE_ROW) {
+        try checkError(check_step, s);
+    }
+
+    // Soft delete
+    var stmt: ?*c.sqlite3_stmt = null;
+    const sql = "UPDATE tasks SET is_deleted = 'Y', last_modified = CAST(strftime('%s','now') AS INTEGER) WHERE id = ?;";
+    const rc = c.sqlite3_prepare_v2(s, sql, @intCast(sql.len + 1), &stmt, null);
+    try checkError(rc, s);
+    defer _ = c.sqlite3_finalize(stmt);
+
+    _ = c.sqlite3_bind_int64(stmt, 1, id);
+    const rc2 = c.sqlite3_step(stmt);
+    if (rc2 != c.SQLITE_DONE) {
+        try checkError(rc2, s);
+    }
+}

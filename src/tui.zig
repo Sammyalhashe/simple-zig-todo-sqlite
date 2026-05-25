@@ -9,6 +9,7 @@ const TaskState = struct {
     task: db.Task,
     original_status: []const u8,
     changed: bool,
+    deleted: bool,
 };
 
 /// Holds the TUI's runtime state so it can be passed around cleanly.
@@ -77,6 +78,7 @@ pub fn run(io: std.Io, database: db.AnyBackend, showAll: bool, allocator: std.me
             .task = task,
             .original_status = try allocator.dupe(u8, task.status),
             .changed = false,
+            .deleted = false,
         });
     }
 
@@ -119,6 +121,7 @@ pub fn run(io: std.Io, database: db.AnyBackend, showAll: bool, allocator: std.me
                         .task = new_task,
                         .original_status = try allocator.dupe(u8, "needsAction"),
                         .changed = false,
+                        .deleted = false,
                     });
                     ts.add_mode = false;
                     _ = c.noecho();
@@ -193,6 +196,19 @@ pub fn run(io: std.Io, database: db.AnyBackend, showAll: bool, allocator: std.me
                     ts.search_mode = true;
                     _ = c.echo();
                 },
+                'd' => {
+                    const idx = ts.filtered_indices.items[ts.cursor];
+                    var state = &states.items[idx];
+                    if (!state.deleted) {
+                        state.deleted = true;
+                        // Remove from filtered list so ghost tasks don't linger
+                        const fi_idx = ts.cursor;
+                        const last = ts.filtered_indices.items.len - 1;
+                        if (fi_idx != last) ts.filtered_indices.items[fi_idx] = ts.filtered_indices.items[last];
+                        ts.filtered_indices.items = ts.filtered_indices.items[0..last];
+                        if (ts.cursor >= ts.filtered_indices.items.len) ts.cursor = if (ts.filtered_indices.items.len > 0) ts.filtered_indices.items.len - 1 else 0;
+                    }
+                },
                 'q' => ts.quit = true,
                 ESC => {
                     ts.cancelled = true;
@@ -206,6 +222,14 @@ pub fn run(io: std.Io, database: db.AnyBackend, showAll: bool, allocator: std.me
     if (!ts.cancelled) {
         var changed_count: usize = 0;
         for (states.items) |state| {
+            if (state.deleted) {
+                db.deleteTask(io, database, state.task.id) catch {
+                    std.log.err("Error deleting task {s}.", .{state.task.id});
+                    continue;
+                };
+                changed_count += 1;
+                continue;
+            }
             if (state.changed) {
                 const complete = std.mem.eql(u8, state.task.status, "completed");
                 db.changeCompletionStatus(io, database, state.task.id, complete) catch {
@@ -239,7 +263,7 @@ fn draw(states: []const TaskState, ts: *TuiState) void {
     }
 
     _ = c.attron(c.A_BOLD);
-    _ = c.mvprintw(0, 0, " Todo List (j/k: move, Enter/Space: toggle, a: add, /:search, q: save & quit, Esc: cancel)");
+    _ = c.mvprintw(0, 0, " Todo List (j/k: move, Enter/Space: toggle, d: delete, a: add, /:search, q: save & quit, Esc: cancel)");
     _ = c.attroff(c.A_BOLD);
     _ = c.mvprintw(1, 0, "-----------------------------------------------------------");
 
@@ -259,7 +283,7 @@ fn draw(states: []const TaskState, ts: *TuiState) void {
         const state = &states[task_idx];
         const completed = std.mem.eql(u8, state.task.status, "completed");
         const check: [*c]const u8 = if (completed) "x" else " ";
-        const modified: [*c]const u8 = if (state.changed) "*" else " ";
+        const modified: [*c]const u8 = if (state.deleted) "D" else if (state.changed) "*" else " ";
 
         if (actual_idx == ts.cursor) {
             _ = c.attron(c.A_REVERSE);

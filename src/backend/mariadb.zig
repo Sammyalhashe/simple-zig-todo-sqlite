@@ -573,3 +573,83 @@ pub fn changeCompletionStatus(self: *Self, io: std.Io, id_str: []const u8, compl
         return error.SqlError;
     }
 }
+
+pub fn deleteTask(self: *Self, io: std.Io, id_str: []const u8) !void {
+    _ = io;
+    const m = self.handle;
+    try validateIdStr(id_str);
+
+    // Check existence first
+    const check_sql = "SELECT 1 FROM supernotedb.t_schedule_task WHERE task_id = ?";
+    const check_stmt = c.mysql_stmt_init(m);
+    if (check_stmt == null) {
+        std.log.err("MariaDB stmt_init error: {s}", .{c.mysql_error(m)});
+        return error.SqlError;
+    }
+    defer _ = c.mysql_stmt_close(check_stmt);
+
+    if (c.mysql_stmt_prepare(check_stmt, check_sql, check_sql.len) != 0) {
+        std.log.err("MariaDB check prepare error: {s}", .{c.mysql_stmt_error(check_stmt)});
+        return error.SqlError;
+    }
+
+    var check_id_len: c_ulong = @intCast(id_str.len);
+    var check_bind = [1]c.MYSQL_BIND{.{
+        .buffer_type = c.MYSQL_TYPE_STRING,
+        .buffer = @ptrCast(@constCast(id_str.ptr)),
+        .buffer_length = @intCast(id_str.len),
+        .length = &check_id_len,
+    }};
+
+    if (c.mysql_stmt_bind_param(check_stmt, &check_bind) != 0) {
+        std.log.err("MariaDB check bind error: {s}", .{c.mysql_stmt_error(check_stmt)});
+        return error.SqlError;
+    }
+
+    if (c.mysql_stmt_execute(check_stmt) != 0) {
+        std.log.err("MariaDB check execute error: {s}", .{c.mysql_stmt_error(check_stmt)});
+        return error.SqlError;
+    }
+
+    if (c.mysql_stmt_store_result(check_stmt) != 0) {
+        std.log.err("MariaDB check store_result error: {s}", .{c.mysql_stmt_error(check_stmt)});
+        return error.SqlError;
+    }
+
+    if (c.mysql_stmt_num_rows(check_stmt) == 0) {
+        std.log.err("no task found with id '{s}'", .{id_str});
+        return error.TaskNotFound;
+    }
+
+    // Soft delete
+    const sql = "UPDATE supernotedb.t_schedule_task SET is_deleted = 'Y', last_modified = UNIX_TIMESTAMP() WHERE task_id = ?";
+    const stmt = c.mysql_stmt_init(m);
+    if (stmt == null) {
+        std.log.err("MariaDB stmt_init error: {s}", .{c.mysql_error(m)});
+        return error.SqlError;
+    }
+    defer _ = c.mysql_stmt_close(stmt);
+
+    if (c.mysql_stmt_prepare(stmt, sql, sql.len) != 0) {
+        std.log.err("MariaDB stmt_prepare error: {s}", .{c.mysql_stmt_error(stmt)});
+        return error.SqlError;
+    }
+
+    var id_len: c_ulong = @intCast(id_str.len);
+    var binds = [1]c.MYSQL_BIND{.{
+        .buffer_type = c.MYSQL_TYPE_STRING,
+        .buffer = @ptrCast(@constCast(id_str.ptr)),
+        .buffer_length = @intCast(id_str.len),
+        .length = &id_len,
+    }};
+
+    if (c.mysql_stmt_bind_param(stmt, &binds) != 0) {
+        std.log.err("MariaDB bind_param error: {s}", .{c.mysql_stmt_error(stmt)});
+        return error.SqlError;
+    }
+
+    if (c.mysql_stmt_execute(stmt) != 0) {
+        std.log.err("MariaDB execute error: {s}", .{c.mysql_stmt_error(stmt)});
+        return error.SqlError;
+    }
+}

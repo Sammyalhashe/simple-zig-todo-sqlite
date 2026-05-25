@@ -152,6 +152,18 @@ fn incompleteCmd(io: std.Io, database: db.Db, idStr: []const u8) void {
     std.log.info("Task {s} marked as incomplete.", .{idStr});
 }
 
+fn deleteCmd(io: std.Io, database: db.Db, idStr: []const u8) void {
+    db.deleteTask(io, database, idStr) catch |err| {
+        if (err == error.TaskNotFound) {
+            std.log.err("Task {s} not found.", .{idStr});
+        } else {
+            std.log.err("Failed to delete task {s}: {s}", .{ idStr, @errorName(err) });
+        }
+        return;
+    };
+    std.log.info("Task {s} deleted.", .{idStr});
+}
+
 fn serveCmd(io: std.Io, database: db.Db, arena: std.mem.Allocator) void {
     const socket_path = "/tmp/todo.sock";
     server.serve(io, database, socket_path, arena) catch |err| {
@@ -275,6 +287,10 @@ pub fn main(init: std.process.Init) !void {
     try incomplete_cmd.addArg(Arg.positional("task_id", "Task ID of the task to mark incomplete", null));
     try todo.addSubcommand(incomplete_cmd);
 
+    var delete_cmd = app.createCommand("delete", "Delete a task given its `<task_id>`.");
+    try delete_cmd.addArg(Arg.positional("task_id", "Task ID of the task to delete", null));
+    try todo.addSubcommand(delete_cmd);
+
     const serve_cmd = app.createCommand("serve", "Start JSON-RPC daemon on Unix socket.");
     try todo.addSubcommand(serve_cmd);
 
@@ -363,6 +379,17 @@ pub fn main(init: std.process.Init) !void {
             return;
         };
         incompleteCmd(io, ctx.d_database, idStr);
+    } else if (matches.subcommandMatches("delete")) |delete_matches| {
+        var ctx = DbContext.init(io, startupOptions.d_remoteOptions, init.arena.allocator(), startupOptions.d_jjPath) catch |err| {
+            std.log.err("failed to initialize database: {s}", .{@errorName(err)});
+            return;
+        };
+        defer ctx.deinit(io);
+        const idStr = delete_matches.getSingleValue("task_id") orelse {
+            std.log.info("Missing task_id for 'delete'.", .{});
+            return;
+        };
+        deleteCmd(io, ctx.d_database, idStr);
     } else if (matches.subcommandMatches("sync")) |sync_matches| {
         const remote = startupOptions.d_remoteOptions orelse {
             std.log.info("Error: sync requires -r <host> flag for remote database.", .{});

@@ -70,6 +70,11 @@ pub const AnyBackend = union(enum) {
             inline else => |b| return b.changeCompletionStatus(io, id_str, complete),
         }
     }
+    pub fn deleteTask(self: AnyBackend, io: std.Io, id_str: []const u8) !void {
+        switch (self) {
+            inline else => |b| return b.deleteTask(io, id_str),
+        }
+    }
 };
 
 // Keep Db as a type alias for backward compat during the transition
@@ -121,6 +126,9 @@ pub fn setRemoteTaskId(database: AnyBackend, local_title: []const u8, remote_id:
 }
 pub fn changeCompletionStatus(io: std.Io, database: AnyBackend, id_str: []const u8, complete: bool) !void {
     return database.changeCompletionStatus(io, id_str, complete);
+}
+pub fn deleteTask(io: std.Io, database: AnyBackend, id_str: []const u8) !void {
+    return database.deleteTask(io, id_str);
 }
 
 /// listTasks stays here — it's a presentation function built on queryTasks, not backend-specific.
