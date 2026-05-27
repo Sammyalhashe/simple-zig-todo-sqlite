@@ -8,6 +8,7 @@ const Self = @This();
 allocator: std.mem.Allocator,
 handle: *c.MYSQL,
 user_id: ?u64,
+sort_counter: ?SortValues = null,
 
 fn validateIdStr(id_str: []const u8) !void {
     if (id_str.len == 0 or id_str.len > 255) return error.SqlError;
@@ -20,6 +21,93 @@ fn validateIdStr(id_str: []const u8) !void {
             },
         }
     }
+}
+
+const SortValues = struct {
+    next_sort: i64,
+    next_sort_completed: i64,
+};
+
+fn getNextSortValues(self: *Self) !SortValues {
+    if (self.sort_counter) |*counter| {
+        const result = counter.*;
+        counter.next_sort += 1;
+        counter.next_sort_completed += 1;
+        return result;
+    }
+
+    const m = self.handle;
+
+    const sort_sql = "SELECT COALESCE(MAX(sort), 0) + 1, COALESCE(MAX(sort_completed), 0) + 1 FROM supernotedb.t_schedule_task WHERE user_id = ?";
+    const sort_stmt = c.mysql_stmt_init(m) orelse return error.SqlError;
+    defer _ = c.mysql_stmt_close(sort_stmt);
+
+    if (c.mysql_stmt_prepare(sort_stmt, sort_sql, sort_sql.len) != 0) {
+        std.log.err("MariaDB sort query prepare error: {s}", .{c.mysql_stmt_error(sort_stmt)});
+        return error.SqlError;
+    }
+
+    var param_is_null: c.my_bool = 0;
+    var param_len: c_ulong = 0;
+    var param_bind = [1]c.MYSQL_BIND{.{
+        .buffer_type = c.MYSQL_TYPE_LONGLONG,
+        .buffer = @ptrCast(&self.user_id),
+        .buffer_length = @sizeOf(u64),
+        .is_null = &param_is_null,
+        .length = &param_len,
+    }};
+
+    if (c.mysql_stmt_bind_param(sort_stmt, &param_bind) != 0) {
+        std.log.err("MariaDB sort query bind_param error: {s}", .{c.mysql_stmt_error(sort_stmt)});
+        return error.SqlError;
+    }
+
+    if (c.mysql_stmt_execute(sort_stmt) != 0) {
+        std.log.err("MariaDB sort query execute error: {s}", .{c.mysql_stmt_error(sort_stmt)});
+        return error.SqlError;
+    }
+
+    if (c.mysql_stmt_store_result(sort_stmt) != 0) {
+        std.log.err("MariaDB sort query store_result error: {s}", .{c.mysql_stmt_error(sort_stmt)});
+        return error.SqlError;
+    }
+
+    var next_sort: i64 = 1;
+    var next_sort_completed: i64 = 1;
+    var res_is_null1: c.my_bool = 0;
+    var res_len1: c_ulong = 0;
+    var res_is_null2: c.my_bool = 0;
+    var res_len2: c_ulong = 0;
+
+    var result_binds = [2]c.MYSQL_BIND{
+        .{
+            .buffer_type = c.MYSQL_TYPE_LONGLONG,
+            .buffer = @ptrCast(&next_sort),
+            .buffer_length = @sizeOf(i64),
+            .is_null = &res_is_null1,
+            .length = &res_len1,
+        },
+        .{
+            .buffer_type = c.MYSQL_TYPE_LONGLONG,
+            .buffer = @ptrCast(&next_sort_completed),
+            .buffer_length = @sizeOf(i64),
+            .is_null = &res_is_null2,
+            .length = &res_len2,
+        },
+    };
+
+    if (c.mysql_stmt_bind_result(sort_stmt, &result_binds) != 0) {
+        std.log.err("MariaDB sort query bind_result error: {s}", .{c.mysql_stmt_error(sort_stmt)});
+        return error.SqlError;
+    }
+
+    const fetch_rc = c.mysql_stmt_fetch(sort_stmt);
+    if (fetch_rc != 0) {
+        // No rows or error — use defaults
+        return .{ .next_sort = 1, .next_sort_completed = 1 };
+    }
+
+    return .{ .next_sort = next_sort, .next_sort_completed = next_sort_completed };
 }
 
 fn getDefaultUser(self: *Self) !void {
@@ -78,9 +166,11 @@ pub fn beginTransaction(self: *Self) !void {
         std.log.err("MariaDB START TRANSACTION error: {s}", .{c.mysql_error(self.handle)});
         return error.SqlError;
     }
+    self.sort_counter = self.getNextSortValues() catch null;
 }
 
 pub fn commitTransaction(self: *Self) !void {
+    self.sort_counter = null;
     if (c.mysql_query(self.handle, "COMMIT") != 0) {
         std.log.err("MariaDB COMMIT error: {s}", .{c.mysql_error(self.handle)});
         return error.SqlError;
@@ -88,6 +178,7 @@ pub fn commitTransaction(self: *Self) !void {
 }
 
 pub fn rollbackTransaction(self: *Self) !void {
+    self.sort_counter = null;
     if (c.mysql_query(self.handle, "ROLLBACK") != 0) {
         std.log.err("MariaDB ROLLBACK error: {s}", .{c.mysql_error(self.handle)});
         return error.SqlError;
@@ -99,7 +190,12 @@ pub fn addTask(self: *Self, io: std.Io, desc: []const u8) !void {
     const uuid = util.generateUuidV4(io);
     const task_id: []const u8 = &uuid;
 
-    const ins_sql = "INSERT INTO supernotedb.t_schedule_task (user_id, task_id, title, detail, importance, recurrence, links, status, last_modified, due_time, is_deleted) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, 'needsAction', ROUND(UNIX_TIMESTAMP(NOW(3)) * 1000), 0, 'N')";
+    // Query next sort positions so the Supernote Partner app can display the task
+    const sort_vals = try self.getNextSortValues();
+    var sort_val: i64 = sort_vals.next_sort;
+    var sort_completed_val: i64 = sort_vals.next_sort_completed;
+
+    const ins_sql = "INSERT INTO supernotedb.t_schedule_task (user_id, task_id, title, detail, importance, recurrence, links, status, last_modified, due_time, is_deleted, sort, sort_completed, sort_time) VALUES (?, ?, ?, '', '', '', '', 'needsAction', ROUND(UNIX_TIMESTAMP(NOW(3)) * 1000), 0, 'N', ?, ?, ROUND(UNIX_TIMESTAMP(NOW(3)) * 1000))";
     const ins_stmt = c.mysql_stmt_init(m) orelse return error.SqlError;
     defer _ = c.mysql_stmt_close(ins_stmt);
 
@@ -114,11 +210,11 @@ pub fn addTask(self: *Self, io: std.Io, desc: []const u8) !void {
     var result_is_null: c.my_bool = 0;
     var result_len: c_ulong = 0;
 
-    var ins_binds = [3]c.MYSQL_BIND{
+    var ins_binds = [5]c.MYSQL_BIND{
         .{
             .buffer_type = c.MYSQL_TYPE_LONGLONG,
             .buffer = @ptrCast(&self.user_id),
-            .buffer_length = @sizeOf(f64),
+            .buffer_length = @sizeOf(u64),
             .is_null = &result_is_null,
             .length = &result_len,
         },
@@ -133,6 +229,16 @@ pub fn addTask(self: *Self, io: std.Io, desc: []const u8) !void {
             .buffer = @ptrCast(@constCast(desc.ptr)),
             .buffer_length = @intCast(desc.len),
             .length = &desc_len,
+        },
+        .{
+            .buffer_type = c.MYSQL_TYPE_LONGLONG,
+            .buffer = @ptrCast(&sort_val),
+            .buffer_length = @sizeOf(i64),
+        },
+        .{
+            .buffer_type = c.MYSQL_TYPE_LONGLONG,
+            .buffer = @ptrCast(&sort_completed_val),
+            .buffer_length = @sizeOf(i64),
         },
     };
 
@@ -387,7 +493,12 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask, allocator: std.
         const uuid = util.generateUuidV4(io);
         const task_id: []const u8 = &uuid;
 
-        const ins_sql = "INSERT INTO supernotedb.t_schedule_task (user_id, task_id, title, detail, importance, recurrence, links, status, last_modified, due_time, completed_time, is_deleted) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, 'N')";
+        // Query next sort positions so the Supernote Partner app can display the task
+        const sort_vals = try self.getNextSortValues();
+        var sort_val: i64 = sort_vals.next_sort;
+        var sort_completed_val: i64 = sort_vals.next_sort_completed;
+
+        const ins_sql = "INSERT INTO supernotedb.t_schedule_task (user_id, task_id, title, detail, importance, recurrence, links, status, last_modified, due_time, completed_time, is_deleted, sort, sort_completed, sort_time) VALUES (?, ?, ?, '', '', '', '', ?, ?, ?, ?, 'N', ?, ?, ROUND(UNIX_TIMESTAMP(NOW(3)) * 1000))";
         const ins_stmt = c.mysql_stmt_init(m);
         if (ins_stmt == null) return error.SqlError;
         defer _ = c.mysql_stmt_close(ins_stmt);
@@ -405,11 +516,11 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask, allocator: std.
         var ins_ct_value: i64 = task.completed_time orelse 0;
         var ins_ct_is_null: c.my_bool = if (task.completed_time == null) 1 else 0;
 
-        var ins_binds = [7]c.MYSQL_BIND{
+        var ins_binds = [9]c.MYSQL_BIND{
             .{
                 .buffer_type = c.MYSQL_TYPE_LONGLONG,
                 .buffer = @ptrCast(&self.user_id),
-                .buffer_length = @sizeOf(f64),
+                .buffer_length = @sizeOf(u64),
                 .is_null = &result_is_null,
                 .length = &result_len,
             },
@@ -446,6 +557,16 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask, allocator: std.
                 .buffer = @ptrCast(&ins_ct_value),
                 .buffer_length = @sizeOf(i64),
                 .is_null = &ins_ct_is_null,
+            },
+            .{
+                .buffer_type = c.MYSQL_TYPE_LONGLONG,
+                .buffer = @ptrCast(&sort_val),
+                .buffer_length = @sizeOf(i64),
+            },
+            .{
+                .buffer_type = c.MYSQL_TYPE_LONGLONG,
+                .buffer = @ptrCast(&sort_completed_val),
+                .buffer_length = @sizeOf(i64),
             },
         };
 
