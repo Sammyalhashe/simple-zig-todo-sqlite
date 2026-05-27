@@ -2,6 +2,7 @@ const std = @import("std");
 const c = @import("c");
 const builtin = @import("builtin");
 const types = @import("../types.zig");
+const migrations = @import("migrations.zig");
 
 // Workaround: Zig 0.16 translate-C fails on darwin when casting SQLITE_TRANSIENT (-1) to a
 // function pointer due to alignment checks on @ptrFromInt. Use a C helper on darwin only.
@@ -40,7 +41,7 @@ pub fn init(allocator: std.mem.Allocator, dbPath: [:0]const u8) !*Self {
     }
     try checkError(rc, db);
 
-    const createTable = "CREATE TABLE IF NOT EXISTS tasks (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  title TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT 'needsAction',\n  last_modified INTEGER NOT NULL DEFAULT (strftime('%s','now')),\n  due_time INTEGER NOT NULL DEFAULT 0,\n  is_deleted TEXT NOT NULL DEFAULT 'N',\n  completed_time INTEGER\n)";
+    const createTable = "CREATE TABLE IF NOT EXISTS tasks (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  title TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT 'needsAction',\n  last_modified INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000),\n  due_time INTEGER NOT NULL DEFAULT 0,\n  is_deleted TEXT NOT NULL DEFAULT 'N',\n  completed_time INTEGER\n)";
     var errMsg: [*c]u8 = null;
     const rc2 = c.sqlite3_exec(db, createTable, null, null, &errMsg);
     if (rc2 != c.SQLITE_OK) {
@@ -50,17 +51,7 @@ pub fn init(allocator: std.mem.Allocator, dbPath: [:0]const u8) !*Self {
         return types.SqlError.SqlError;
     }
 
-    // Migration: add remote_task_id column for sync identity tracking.
-    _ = c.sqlite3_exec(db, "ALTER TABLE tasks ADD COLUMN remote_task_id TEXT", null, null, null);
-
-    // Migration: add due_time column for deadline tracking.
-    _ = c.sqlite3_exec(db, "ALTER TABLE tasks ADD COLUMN due_time INTEGER NOT NULL DEFAULT 0", null, null, null);
-
-    // Enforce at most one local row per remote identity.
-    const idx_rc = c.sqlite3_exec(db, "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_remote_task_id ON tasks(remote_task_id) WHERE remote_task_id IS NOT NULL;", null, null, null);
-    if (idx_rc != c.SQLITE_OK) {
-        std.log.warn("Warning: could not create unique index on remote_task_id (possible duplicates in existing data)", .{});
-    }
+    migrations.run(db.?);
 
     const self = try allocator.create(Self);
     self.* = .{
@@ -114,7 +105,7 @@ pub fn rollbackTransaction(self: *Self) !void {
 pub fn addTask(self: *Self, io: std.Io, desc: []const u8) !void {
     _ = io;
     var stmt: ?*c.sqlite3_stmt = null;
-    const sql = "INSERT INTO tasks (title, last_modified) VALUES (?, CAST(strftime('%s','now') AS INTEGER));";
+    const sql = "INSERT INTO tasks (title, last_modified) VALUES (?, CAST(strftime('%s','now') AS INTEGER) * 1000);";
     const rc = c.sqlite3_prepare_v2(self.handle, sql, @intCast(sql.len + 1), &stmt, null);
     try checkError(rc, self.handle);
     defer _ = c.sqlite3_finalize(stmt);
@@ -235,7 +226,7 @@ pub fn queryAllTasksForSync(self: *Self, allocator: std.mem.Allocator) !std.Arra
     return tasks;
 }
 
-pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask) !types.UpsertResult {
+pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask, allocator: std.mem.Allocator) !types.UpsertResultWithId {
     _ = io;
     const s = self.handle;
 
@@ -290,9 +281,15 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask) !types.UpsertRe
             if (rc3 != c.SQLITE_DONE) {
                 try checkError(rc3, s);
             }
-            return .updated;
+            return .{
+                .result = .updated,
+                .task_id = try allocator.dupe(u8, "0"),
+            };
         } else {
-            return .skipped;
+            return .{
+                .result = .skipped,
+                .task_id = try allocator.dupe(u8, "0"),
+            };
         }
     } else if (step == c.SQLITE_DONE) {
         var ins_stmt: ?*c.sqlite3_stmt = null;
@@ -320,10 +317,16 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask) !types.UpsertRe
         if (rc3 != c.SQLITE_DONE) {
             try checkError(rc3, s);
         }
-        return .inserted;
+        return .{
+            .result = .inserted,
+            .task_id = try allocator.dupe(u8, "0"),
+        };
     } else {
         try checkError(step, s);
-        return .skipped;
+        return .{
+            .result = .skipped,
+            .task_id = try allocator.dupe(u8, "0"),
+        };
     }
 }
 
@@ -365,7 +368,7 @@ pub fn changeCompletionStatus(self: *Self, io: std.Io, id_str: []const u8, compl
 
     // Task exists — proceed with UPDATE
     var stmt: ?*c.sqlite3_stmt = null;
-    const sql = "UPDATE tasks SET status = ?, completed_time = ?, last_modified = CAST(strftime('%s','now') AS INTEGER) WHERE id = ?;";
+    const sql = "UPDATE tasks SET status = ?, completed_time = ?, last_modified = CAST(strftime('%s','now') AS INTEGER) * 1000 WHERE id = ?;";
     const rc = c.sqlite3_prepare_v2(s, sql, @intCast(sql.len + 1), &stmt, null);
     try checkError(rc, s);
     defer _ = c.sqlite3_finalize(stmt);
@@ -374,8 +377,8 @@ pub fn changeCompletionStatus(self: *Self, io: std.Io, id_str: []const u8, compl
     _ = bindTextTransient(stmt, 1, statusVal.ptr, @intCast(statusVal.len));
     if (complete) {
         const ts = std.Io.Timestamp.now(io, .real);
-        const seconds = @as(i64, @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_s)));
-        _ = c.sqlite3_bind_int64(stmt, 2, seconds);
+        const millis = @as(i64, @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_ms)));
+        _ = c.sqlite3_bind_int64(stmt, 2, millis);
     } else {
         _ = c.sqlite3_bind_null(stmt, 2);
     }
@@ -408,7 +411,7 @@ pub fn deleteTask(self: *Self, io: std.Io, id_str: []const u8) !void {
 
     // Soft delete
     var stmt: ?*c.sqlite3_stmt = null;
-    const sql = "UPDATE tasks SET is_deleted = 'Y', last_modified = CAST(strftime('%s','now') AS INTEGER) WHERE id = ?;";
+    const sql = "UPDATE tasks SET is_deleted = 'Y', last_modified = CAST(strftime('%s','now') AS INTEGER) * 1000 WHERE id = ?;";
     const rc = c.sqlite3_prepare_v2(s, sql, @intCast(sql.len + 1), &stmt, null);
     try checkError(rc, s);
     defer _ = c.sqlite3_finalize(stmt);

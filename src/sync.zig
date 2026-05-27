@@ -181,18 +181,20 @@ pub fn syncTasks(
         switch (verdict) {
             .create_remote => {
                 if (!dry_run) {
-                    _ = db.upsertTask(io, remote_db, local_task) catch {
+                    const upsert_res = db.upsertTask(io, remote_db, local_task, allocator) catch {
                         std.log.err("Error: failed to sync task '{s}' to remote.", .{local_task.title});
                         report.errors += 1;
                         continue;
                     };
+                    db.setRemoteTaskId(local_db, local_task.title, upsert_res.task_id) catch {
+                        std.log.warn("Warning: failed to backfill remote_task_id for '{s}'", .{local_task.title});
+                    };
+                    allocator.free(upsert_res.task_id);
                 }
                 report.created_remote += 1;
             },
             .update_remote => {
                 if (!dry_run) {
-                    // When updating remote, propagate the remote_id so upsertTask
-                    // matches by task_id rather than title.
                     const task_to_push = if (local_task.remote_id == null and remote_match != null)
                         db.SyncTask{
                             .title = local_task.title,
@@ -205,21 +207,23 @@ pub fn syncTasks(
                         }
                     else
                         local_task;
-                    _ = db.upsertTask(io, remote_db, task_to_push) catch {
+                    const upsert_res = db.upsertTask(io, remote_db, task_to_push, allocator) catch {
                         std.log.err("Error: failed to sync task '{s}' to remote.", .{local_task.title});
                         report.errors += 1;
                         continue;
                     };
+                    allocator.free(upsert_res.task_id);
                 }
                 report.updated_remote += 1;
             },
             .update_local => {
                 if (!dry_run) {
-                    _ = db.upsertTask(io, local_db, remote_match.?) catch {
+                    const upsert_res = db.upsertTask(io, local_db, remote_match.?, allocator) catch {
                         std.log.err("Error: failed to sync task '{s}' from remote.", .{remote_match.?.title});
                         report.errors += 1;
                         continue;
                     };
+                    allocator.free(upsert_res.task_id);
                 }
                 report.updated_local += 1;
             },
@@ -259,11 +263,12 @@ pub fn syncTasks(
         switch (verdict) {
             .create_local => {
                 if (!dry_run) {
-                    _ = db.upsertTask(io, local_db, remote_task) catch {
+                    const upsert_res = db.upsertTask(io, local_db, remote_task, allocator) catch {
                         std.log.err("Error: failed to sync task '{s}' from remote.", .{remote_task.title});
                         report.errors += 1;
                         continue;
                     };
+                    allocator.free(upsert_res.task_id);
                 }
                 report.created_local += 1;
             },

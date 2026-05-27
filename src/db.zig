@@ -55,9 +55,9 @@ pub const AnyBackend = union(enum) {
             inline else => |b| return b.queryAllTasksForSync(allocator),
         }
     }
-    pub fn upsertTask(self: AnyBackend, io: std.Io, task: SyncTask) !UpsertResult {
+    pub fn upsertTask(self: AnyBackend, io: std.Io, task: SyncTask, allocator: std.mem.Allocator) !types.UpsertResultWithId {
         switch (self) {
-            inline else => |b| return b.upsertTask(io, task),
+            inline else => |b| return b.upsertTask(io, task, allocator),
         }
     }
     pub fn setRemoteTaskId(self: AnyBackend, local_title: []const u8, remote_id: []const u8) !void {
@@ -118,8 +118,8 @@ pub fn queryTasks(database: AnyBackend, showAll: bool, allocator: std.mem.Alloca
 pub fn queryAllTasksForSync(database: AnyBackend, allocator: std.mem.Allocator) !std.ArrayList(SyncTask) {
     return database.queryAllTasksForSync(allocator);
 }
-pub fn upsertTask(io: std.Io, database: AnyBackend, task: SyncTask) !UpsertResult {
-    return database.upsertTask(io, task);
+pub fn upsertTask(io: std.Io, database: AnyBackend, task: SyncTask, allocator: std.mem.Allocator) !types.UpsertResultWithId {
+    return database.upsertTask(io, task, allocator);
 }
 pub fn setRemoteTaskId(database: AnyBackend, local_title: []const u8, remote_id: []const u8) !void {
     return database.setRemoteTaskId(local_title, remote_id);

@@ -77,7 +77,7 @@ reset_dbs() {
 # Helper to add tasks to remote via SQL
 add_remote_task() {
     local task_id="$1" title="$2"
-    mariadb --socket="$TEST_MARIADB_SOCKET" -N -e "INSERT INTO supernotedb.t_schedule_task (task_id, title, status, last_modified, is_deleted, user_id, due_time) VALUES ('$task_id', '$title', 'needsAction', UNIX_TIMESTAMP(), 'N', 0, 0)"
+    mariadb --socket="$TEST_MARIADB_SOCKET" -N -e "INSERT INTO supernotedb.t_schedule_task (task_id, title, status, last_modified, is_deleted, user_id, due_time) VALUES ('$task_id', '$title', 'needsAction', ROUND(UNIX_TIMESTAMP(NOW(3)) * 1000), 'N', 0, 0)"
 }
 
 # Helper to query remote tasks
