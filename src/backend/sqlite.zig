@@ -1,8 +1,10 @@
 const std = @import("std");
 const c = @import("c");
 const builtin = @import("builtin");
-const types = @import("../types.zig");
+
 const migrations = @import("migrations.zig");
+const types = @import("../types.zig");
+const utils = @import("../util.zig");
 
 // Workaround: Zig 0.16 translate-C fails on darwin when casting SQLITE_TRANSIENT (-1) to a
 // function pointer due to alignment checks on @ptrFromInt. Use a C helper on darwin only.
@@ -41,7 +43,7 @@ pub fn init(allocator: std.mem.Allocator, dbPath: [:0]const u8) !*Self {
     }
     try checkError(rc, db);
 
-    const createTable = "CREATE TABLE IF NOT EXISTS tasks (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  title TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT 'needsAction',\n  last_modified INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000),\n  due_time INTEGER NOT NULL DEFAULT 0,\n  is_deleted TEXT NOT NULL DEFAULT 'N',\n  completed_time INTEGER\n)";
+    const createTable = @embedFile("./queries/sqlite/create_table.sql");
     var errMsg: [*c]u8 = null;
     const rc2 = c.sqlite3_exec(db, createTable, null, null, &errMsg);
     if (rc2 != c.SQLITE_OK) {
@@ -105,7 +107,7 @@ pub fn rollbackTransaction(self: *Self) !void {
 pub fn addTask(self: *Self, io: std.Io, desc: []const u8) !void {
     _ = io;
     var stmt: ?*c.sqlite3_stmt = null;
-    const sql = "INSERT INTO tasks (title, last_modified) VALUES (?, CAST(strftime('%s','now') AS INTEGER) * 1000);";
+    const sql = @embedFile("./queries/sqlite/addTask.sql");
     const rc = c.sqlite3_prepare_v2(self.handle, sql, @intCast(sql.len + 1), &stmt, null);
     try checkError(rc, self.handle);
     defer _ = c.sqlite3_finalize(stmt);
@@ -131,9 +133,9 @@ pub fn queryTasks(self: *Self, showAll: bool, allocator: std.mem.Allocator) !std
 
     var stmt: ?*c.sqlite3_stmt = null;
     const sql = if (showAll)
-        "SELECT id, title, status FROM tasks WHERE is_deleted != 'Y' ORDER BY last_modified DESC;"
+        @embedFile("./queries/sqlite/showAllTasks.sql")
     else
-        "SELECT id, title, status FROM tasks WHERE is_deleted != 'Y' AND status != 'completed' ORDER BY last_modified DESC;";
+        @embedFile("./queries/sqlite/showIncompleteTasks.sql");
     const rc = c.sqlite3_prepare_v2(s, sql, @intCast(sql.len + 1), &stmt, null);
     try checkError(rc, s);
     defer _ = c.sqlite3_finalize(stmt);
@@ -177,7 +179,7 @@ pub fn queryAllTasksForSync(self: *Self, allocator: std.mem.Allocator) !std.Arra
     const s = self.handle;
 
     var stmt: ?*c.sqlite3_stmt = null;
-    const sql = "SELECT title, status, last_modified, due_time, completed_time, is_deleted, remote_task_id FROM tasks WHERE is_deleted != 'Y';";
+    const sql = @embedFile("./queries/sqlite/queryAll.sql");
     const rc = c.sqlite3_prepare_v2(s, sql, @intCast(sql.len + 1), &stmt, null);
     try checkError(rc, s);
     defer _ = c.sqlite3_finalize(stmt);
@@ -232,9 +234,9 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask, allocator: std.
 
     const use_remote_id = task.remote_id != null;
     const check_sql = if (use_remote_id)
-        "SELECT last_modified FROM tasks WHERE remote_task_id = ? AND is_deleted != 'Y';"
+        @embedFile("./queries/sqlite/searchIncompleteByTaskId.sql")
     else
-        "SELECT last_modified FROM tasks WHERE title = ? AND is_deleted != 'Y' AND remote_task_id IS NULL;";
+        @embedFile("./queries/sqlite/searchIncompleteByTitle.sql");
 
     var check_stmt: ?*c.sqlite3_stmt = null;
     const rc1 = c.sqlite3_prepare_v2(s, check_sql, @intCast(check_sql.len + 1), &check_stmt, null);
@@ -253,9 +255,9 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask, allocator: std.
         const existing_lm = c.sqlite3_column_int64(check_stmt, 0);
         if (task.last_modified > existing_lm) {
             const upd_sql = if (use_remote_id)
-                "UPDATE tasks SET title = ?, status = ?, completed_time = ?, last_modified = ? WHERE remote_task_id = ? AND is_deleted != 'Y';"
+                @embedFile("./queries/sqlite/updateByRemoteId.sql")
             else
-                "UPDATE tasks SET title = ?, status = ?, completed_time = ?, last_modified = ? WHERE title = ? AND is_deleted != 'Y' AND remote_task_id IS NULL;";
+                @embedFile("./queries/sqlite/updateByTitle.sql");
 
             var upd_stmt: ?*c.sqlite3_stmt = null;
             const rc2 = c.sqlite3_prepare_v2(s, upd_sql, @intCast(upd_sql.len + 1), &upd_stmt, null);
@@ -293,7 +295,7 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask, allocator: std.
         }
     } else if (step == c.SQLITE_DONE) {
         var ins_stmt: ?*c.sqlite3_stmt = null;
-        const ins_sql = "INSERT INTO tasks (title, status, last_modified, due_time, completed_time, is_deleted, remote_task_id) VALUES (?, ?, ?, ?, ?, 'N', ?);";
+        const ins_sql = @embedFile("./queries/sqlite/addTaskInUpsert.sql");
         const rc2 = c.sqlite3_prepare_v2(s, ins_sql, @intCast(ins_sql.len + 1), &ins_stmt, null);
         try checkError(rc2, s);
         defer _ = c.sqlite3_finalize(ins_stmt);
@@ -333,7 +335,7 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask, allocator: std.
 pub fn setRemoteTaskId(self: *Self, local_title: []const u8, remote_id: []const u8) !void {
     const s = self.handle;
     var stmt: ?*c.sqlite3_stmt = null;
-    const sql = "UPDATE tasks SET remote_task_id = ? WHERE title = ? AND is_deleted != 'Y' AND remote_task_id IS NULL;";
+    const sql = @embedFile("./queries/sqlite/setRemoteTaskId.sql");
     const rc = c.sqlite3_prepare_v2(s, sql, @intCast(sql.len + 1), &stmt, null);
     try checkError(rc, s);
     defer _ = c.sqlite3_finalize(stmt);
@@ -353,7 +355,7 @@ pub fn changeCompletionStatus(self: *Self, io: std.Io, id_str: []const u8, compl
 
     // Check existence first
     var check_stmt: ?*c.sqlite3_stmt = null;
-    const check_sql = "SELECT 1 FROM tasks WHERE id = ?;";
+    const check_sql = @embedFile("./queries/sqlite/searchForTaskId.sql");
     const check_rc = c.sqlite3_prepare_v2(s, check_sql, @intCast(check_sql.len + 1), &check_stmt, null);
     try checkError(check_rc, s);
     defer _ = c.sqlite3_finalize(check_stmt);
@@ -368,7 +370,7 @@ pub fn changeCompletionStatus(self: *Self, io: std.Io, id_str: []const u8, compl
 
     // Task exists — proceed with UPDATE
     var stmt: ?*c.sqlite3_stmt = null;
-    const sql = "UPDATE tasks SET status = ?, completed_time = ?, last_modified = CAST(strftime('%s','now') AS INTEGER) * 1000 WHERE id = ?;";
+    const sql = @embedFile("./queries/sqlite/changeCompletionStatus.sql");
     const rc = c.sqlite3_prepare_v2(s, sql, @intCast(sql.len + 1), &stmt, null);
     try checkError(rc, s);
     defer _ = c.sqlite3_finalize(stmt);
@@ -396,7 +398,7 @@ pub fn deleteTask(self: *Self, io: std.Io, id_str: []const u8) !void {
 
     // Check existence first
     var check_stmt: ?*c.sqlite3_stmt = null;
-    const check_sql = "SELECT 1 FROM tasks WHERE id = ?;";
+    const check_sql = @embedFile("./queries/sqlite/searchForTaskId.sql");
     const check_rc = c.sqlite3_prepare_v2(s, check_sql, @intCast(check_sql.len + 1), &check_stmt, null);
     try checkError(check_rc, s);
     defer _ = c.sqlite3_finalize(check_stmt);
@@ -411,7 +413,7 @@ pub fn deleteTask(self: *Self, io: std.Io, id_str: []const u8) !void {
 
     // Soft delete
     var stmt: ?*c.sqlite3_stmt = null;
-    const sql = "UPDATE tasks SET is_deleted = 'Y', last_modified = CAST(strftime('%s','now') AS INTEGER) * 1000 WHERE id = ?;";
+    const sql = @embedFile("./queries/sqlite/softDelete.sql");
     const rc = c.sqlite3_prepare_v2(s, sql, @intCast(sql.len + 1), &stmt, null);
     try checkError(rc, s);
     defer _ = c.sqlite3_finalize(stmt);

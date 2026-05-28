@@ -38,7 +38,7 @@ fn getNextSortValues(self: *Self) !SortValues {
 
     const m = self.handle;
 
-    const sort_sql = "SELECT COALESCE(MAX(sort), 0) + 1, COALESCE(MAX(sort_completed), 0) + 1 FROM supernotedb.t_schedule_task WHERE user_id = ?";
+    const sort_sql = @embedFile("./queries/mariadb/sort.sql");
     const sort_stmt = c.mysql_stmt_init(m) orelse return error.SqlError;
     defer _ = c.mysql_stmt_close(sort_stmt);
 
@@ -113,7 +113,7 @@ fn getNextSortValues(self: *Self) !SortValues {
 fn getDefaultUser(self: *Self) !void {
     const m = self.handle;
 
-    const select_user_sql = "SELECT user_id from u_user LIMIT 1";
+    const select_user_sql = @embedFile("./queries/mariadb/getDefaultUser.sql");
 
     if (c.mysql_query(m, select_user_sql) != 0) {
         std.log.err("MariaDB query error: {s}", .{c.mysql_error(m)});
@@ -195,7 +195,7 @@ pub fn addTask(self: *Self, io: std.Io, desc: []const u8) !void {
     var sort_val: i64 = sort_vals.next_sort;
     var sort_completed_val: i64 = sort_vals.next_sort_completed;
 
-    const ins_sql = "INSERT INTO supernotedb.t_schedule_task (user_id, task_id, title, detail, importance, recurrence, links, status, last_modified, due_time, is_deleted, sort, sort_completed, sort_time) VALUES (?, ?, ?, '', '', '', '', 'needsAction', ROUND(UNIX_TIMESTAMP(NOW(3)) * 1000), 0, 'N', ?, ?, ROUND(UNIX_TIMESTAMP(NOW(3)) * 1000))";
+    const ins_sql = @embedFile("./queries/mariadb/insertTask.sql");
     const ins_stmt = c.mysql_stmt_init(m) orelse return error.SqlError;
     defer _ = c.mysql_stmt_close(ins_stmt);
 
@@ -204,13 +204,27 @@ pub fn addTask(self: *Self, io: std.Io, desc: []const u8) !void {
         return error.SqlError;
     }
 
+    const now = std.Io.Timestamp.now(io, .real).toMilliseconds();
+
     var task_id_len: c_ulong = @intCast(uuid.len);
     var desc_len: c_ulong = @intCast(desc.len);
 
     var result_is_null: c.my_bool = 0;
     var result_len: c_ulong = 0;
 
-    var ins_binds = [5]c.MYSQL_BIND{
+    const status = "needsAction";
+    var ins_status_len: c_ulong = @intCast(status.len);
+
+    var ins_detail_is_null: c.my_bool = 1;
+    var ins_recurrence_is_null: c.my_bool = 1;
+    var ins_importance_is_null: c.my_bool = 1;
+    var ins_links_is_null: c.my_bool = 1;
+    var ins_lm_value: i64 = now;
+    var ins_due_value: i64 = 0;
+    var ins_ct_is_null: c.my_bool = 1;
+
+    var ins_binds = [13]c.MYSQL_BIND{
+        // user_id
         .{
             .buffer_type = c.MYSQL_TYPE_LONGLONG,
             .buffer = @ptrCast(&self.user_id),
@@ -218,23 +232,71 @@ pub fn addTask(self: *Self, io: std.Io, desc: []const u8) !void {
             .is_null = &result_is_null,
             .length = &result_len,
         },
+        // task_id
         .{
             .buffer_type = c.MYSQL_TYPE_STRING,
             .buffer = @ptrCast(@constCast(task_id.ptr)),
             .buffer_length = @intCast(task_id.len),
             .length = &task_id_len,
         },
+        // title
         .{
             .buffer_type = c.MYSQL_TYPE_STRING,
             .buffer = @ptrCast(@constCast(desc.ptr)),
             .buffer_length = @intCast(desc.len),
             .length = &desc_len,
         },
+        // detail
+        .{
+            .buffer_type = c.MYSQL_TYPE_STRING,
+            .is_null = &ins_detail_is_null,
+        },
+        // importance
+        .{
+            .buffer_type = c.MYSQL_TYPE_STRING,
+            .is_null = &ins_importance_is_null,
+        },
+        // recurrence
+        .{
+            .buffer_type = c.MYSQL_TYPE_STRING,
+            .is_null = &ins_recurrence_is_null,
+        },
+        // links
+        .{
+            .buffer_type = c.MYSQL_TYPE_STRING,
+            .is_null = &ins_links_is_null,
+        },
+        // status
+        .{
+            .buffer_type = c.MYSQL_TYPE_STRING,
+            .buffer = @ptrCast(@constCast(status.ptr)),
+            .buffer_length = @intCast(status.len),
+            .length = &ins_status_len,
+        },
+        // last_modified
+        .{
+            .buffer_type = c.MYSQL_TYPE_LONGLONG,
+            .buffer = @ptrCast(&ins_lm_value),
+            .buffer_length = @sizeOf(i64),
+        },
+        // due_time
+        .{
+            .buffer_type = c.MYSQL_TYPE_LONGLONG,
+            .buffer = @ptrCast(&ins_due_value),
+            .buffer_length = @sizeOf(i64),
+        },
+        // completed_time
+        .{
+            .buffer_type = c.MYSQL_TYPE_LONGLONG,
+            .is_null = &ins_ct_is_null,
+        },
+        // sort
         .{
             .buffer_type = c.MYSQL_TYPE_LONGLONG,
             .buffer = @ptrCast(&sort_val),
             .buffer_length = @sizeOf(i64),
         },
+        // sort_completed
         .{
             .buffer_type = c.MYSQL_TYPE_LONGLONG,
             .buffer = @ptrCast(&sort_completed_val),
@@ -266,9 +328,9 @@ pub fn queryTasks(self: *Self, showAll: bool, allocator: std.mem.Allocator) !std
     const m = self.handle;
 
     const query = if (showAll)
-        "SELECT task_id, title, status FROM supernotedb.t_schedule_task WHERE is_deleted != 'Y' ORDER BY last_modified DESC;"
+        @embedFile("./queries/mariadb/showAllTasks.sql")
     else
-        "SELECT task_id, title, status FROM supernotedb.t_schedule_task WHERE is_deleted != 'Y' AND status != 'completed' ORDER BY last_modified DESC;";
+        @embedFile("./queries/mariadb/showIncompleteTasks.sql");
     if (c.mysql_query(m, query) != 0) {
         std.log.err("MariaDB query error: {s}", .{c.mysql_error(m)});
         return error.SqlError;
@@ -306,7 +368,7 @@ pub fn queryAllTasksForSync(self: *Self, allocator: std.mem.Allocator) !std.Arra
     }
     const m = self.handle;
 
-    const sync_query = "SELECT title, status, last_modified, due_time, completed_time, is_deleted, task_id FROM supernotedb.t_schedule_task WHERE is_deleted != 'Y';";
+    const sync_query = @embedFile("./queries/mariadb/queryAll.sql");
     if (c.mysql_query(m, sync_query) != 0) {
         std.log.err("MariaDB query error: {s}", .{c.mysql_error(m)});
         return error.SqlError;
@@ -358,9 +420,9 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask, allocator: std.
 
     const use_remote_id = task.remote_id != null;
     const check_sql = if (use_remote_id)
-        "SELECT last_modified FROM supernotedb.t_schedule_task WHERE task_id = ? AND is_deleted != 'Y'"
+        @embedFile("./queries/mariadb/searchIncompleteByTaskId.sql")
     else
-        "SELECT last_modified FROM supernotedb.t_schedule_task WHERE title = ? AND is_deleted != 'Y'";
+        @embedFile("./queries/mariadb/searchIncompleteByTitle.sql");
 
     const check_stmt = c.mysql_stmt_init(m);
     if (check_stmt == null) {
@@ -418,9 +480,9 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask, allocator: std.
     if (fetch_rc == 0) {
         if (task.last_modified > existing_lm) {
             const upd_sql = if (use_remote_id)
-                "UPDATE supernotedb.t_schedule_task SET title = ?, status = ?, completed_time = ?, last_modified = ? WHERE task_id = ? AND is_deleted != 'Y'"
+                @embedFile("./queries/mariadb/updateByRemoteId.sql")
             else
-                "UPDATE supernotedb.t_schedule_task SET title = ?, status = ?, completed_time = ?, last_modified = ? WHERE title = ? AND is_deleted != 'Y'";
+                @embedFile("./queries/mariadb/updateByTitle.sql");
             const upd_stmt = c.mysql_stmt_init(m);
             if (upd_stmt == null) return error.SqlError;
             defer _ = c.mysql_stmt_close(upd_stmt);
@@ -498,7 +560,7 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask, allocator: std.
         var sort_val: i64 = sort_vals.next_sort;
         var sort_completed_val: i64 = sort_vals.next_sort_completed;
 
-        const ins_sql = "INSERT INTO supernotedb.t_schedule_task (user_id, task_id, title, detail, importance, recurrence, links, status, last_modified, due_time, completed_time, is_deleted, sort, sort_completed, sort_time) VALUES (?, ?, ?, '', '', '', '', ?, ?, ?, ?, 'N', ?, ?, ROUND(UNIX_TIMESTAMP(NOW(3)) * 1000))";
+        const ins_sql = @embedFile("./queries/mariadb/insertTask.sql");
         const ins_stmt = c.mysql_stmt_init(m);
         if (ins_stmt == null) return error.SqlError;
         defer _ = c.mysql_stmt_close(ins_stmt);
@@ -515,8 +577,13 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask, allocator: std.
         var ins_due_value: i64 = task.due_time;
         var ins_ct_value: i64 = task.completed_time orelse 0;
         var ins_ct_is_null: c.my_bool = if (task.completed_time == null) 1 else 0;
+        var ins_detail_is_null: c.my_bool = 1;
+        var ins_recurrence_is_null: c.my_bool = 1;
+        var ins_importance_is_null: c.my_bool = 1;
+        var ins_links_is_null: c.my_bool = 1;
 
-        var ins_binds = [9]c.MYSQL_BIND{
+        var ins_binds = [13]c.MYSQL_BIND{
+            // user_id
             .{
                 .buffer_type = c.MYSQL_TYPE_LONGLONG,
                 .buffer = @ptrCast(&self.user_id),
@@ -524,45 +591,73 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask, allocator: std.
                 .is_null = &result_is_null,
                 .length = &result_len,
             },
+            // task_id
             .{
                 .buffer_type = c.MYSQL_TYPE_STRING,
                 .buffer = @ptrCast(@constCast(task_id.ptr)),
                 .buffer_length = @intCast(task_id.len),
                 .length = &task_id_len,
             },
+            // title
             .{
                 .buffer_type = c.MYSQL_TYPE_STRING,
                 .buffer = @ptrCast(@constCast(task.title.ptr)),
                 .buffer_length = @intCast(task.title.len),
                 .length = &ins_title_len,
             },
+            // detail
+            .{
+                .buffer_type = c.MYSQL_TYPE_STRING,
+                .is_null = &ins_detail_is_null,
+            },
+            // importance
+            .{
+                .buffer_type = c.MYSQL_TYPE_STRING,
+                .is_null = &ins_importance_is_null,
+            },
+            // recurrence
+            .{
+                .buffer_type = c.MYSQL_TYPE_STRING,
+                .is_null = &ins_recurrence_is_null,
+            },
+            // links
+            .{
+                .buffer_type = c.MYSQL_TYPE_STRING,
+                .is_null = &ins_links_is_null,
+            },
+            // status
             .{
                 .buffer_type = c.MYSQL_TYPE_STRING,
                 .buffer = @ptrCast(@constCast(task.status.ptr)),
                 .buffer_length = @intCast(task.status.len),
                 .length = &ins_status_len,
             },
+            // last_modified
             .{
                 .buffer_type = c.MYSQL_TYPE_LONGLONG,
                 .buffer = @ptrCast(&ins_lm_value),
                 .buffer_length = @sizeOf(i64),
             },
+            // due_time
             .{
                 .buffer_type = c.MYSQL_TYPE_LONGLONG,
                 .buffer = @ptrCast(&ins_due_value),
                 .buffer_length = @sizeOf(i64),
             },
+            // completed_time
             .{
                 .buffer_type = c.MYSQL_TYPE_LONGLONG,
                 .buffer = @ptrCast(&ins_ct_value),
                 .buffer_length = @sizeOf(i64),
                 .is_null = &ins_ct_is_null,
             },
+            // sort
             .{
                 .buffer_type = c.MYSQL_TYPE_LONGLONG,
                 .buffer = @ptrCast(&sort_val),
                 .buffer_length = @sizeOf(i64),
             },
+            // sort_completed
             .{
                 .buffer_type = c.MYSQL_TYPE_LONGLONG,
                 .buffer = @ptrCast(&sort_completed_val),
@@ -601,7 +696,7 @@ pub fn changeCompletionStatus(self: *Self, io: std.Io, id_str: []const u8, compl
     try validateIdStr(id_str);
 
     // Check existence first
-    const check_sql = "SELECT 1 FROM supernotedb.t_schedule_task WHERE task_id = ?";
+    const check_sql = @embedFile("./queries/mariadb/searchForTaskId.sql");
     const check_stmt = c.mysql_stmt_init(m);
     if (check_stmt == null) {
         std.log.err("MariaDB stmt_init error: {s}", .{c.mysql_error(m)});
@@ -643,7 +738,7 @@ pub fn changeCompletionStatus(self: *Self, io: std.Io, id_str: []const u8, compl
     }
 
     // Task exists — proceed with UPDATE
-    const sql = "UPDATE supernotedb.t_schedule_task SET status = ?, completed_time = ?, last_modified = ROUND(UNIX_TIMESTAMP(NOW(3)) * 1000) WHERE task_id = ?";
+    const sql = @embedFile("./queries/mariadb/changeCompletionStatus.sql");
     const stmt = c.mysql_stmt_init(m);
     if (stmt == null) {
         std.log.err("MariaDB stmt_init error: {s}", .{c.mysql_error(m)});
@@ -659,9 +754,8 @@ pub fn changeCompletionStatus(self: *Self, io: std.Io, id_str: []const u8, compl
     const statusVal: []const u8 = if (complete) "completed" else "needsAction";
     var status_len: c_ulong = @intCast(statusVal.len);
 
-    const ts = std.Io.Timestamp.now(io, .real);
-    const millis = @as(i64, @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_ms)));
-    var ct_value: i64 = millis;
+    const ts = std.Io.Timestamp.now(io, .real).toMilliseconds();
+    var ct_value: i64 = ts;
     var ct_is_null: c.my_bool = if (complete) 0 else 1;
 
     var id_len: c_ulong = @intCast(id_str.len);
@@ -704,7 +798,7 @@ pub fn deleteTask(self: *Self, io: std.Io, id_str: []const u8) !void {
     try validateIdStr(id_str);
 
     // Check existence first
-    const check_sql = "SELECT 1 FROM supernotedb.t_schedule_task WHERE task_id = ?";
+    const check_sql = @embedFile("./queries/mariadb/searchForTaskId.sql");
     const check_stmt = c.mysql_stmt_init(m);
     if (check_stmt == null) {
         std.log.err("MariaDB stmt_init error: {s}", .{c.mysql_error(m)});
@@ -746,7 +840,7 @@ pub fn deleteTask(self: *Self, io: std.Io, id_str: []const u8) !void {
     }
 
     // Soft delete
-    const sql = "UPDATE supernotedb.t_schedule_task SET is_deleted = 'Y', last_modified = ROUND(UNIX_TIMESTAMP(NOW(3)) * 1000) WHERE task_id = ?";
+    const sql = @embedFile("./queries/mariadb/softDelete.sql");
     const stmt = c.mysql_stmt_init(m);
     if (stmt == null) {
         std.log.err("MariaDB stmt_init error: {s}", .{c.mysql_error(m)});
