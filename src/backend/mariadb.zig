@@ -221,7 +221,7 @@ pub fn addTask(self: *Self, io: std.Io, desc: []const u8) !void {
     var ins_links_is_null: c.my_bool = 1;
     var ins_lm_value: i64 = now;
     var ins_due_value: i64 = 0;
-    var ins_ct_is_null: c.my_bool = 1;
+    var ins_ct_value: i64 = 0;
 
     var ins_binds = [13]c.MYSQL_BIND{
         // user_id
@@ -288,7 +288,8 @@ pub fn addTask(self: *Self, io: std.Io, desc: []const u8) !void {
         // completed_time
         .{
             .buffer_type = c.MYSQL_TYPE_LONGLONG,
-            .is_null = &ins_ct_is_null,
+            .buffer = @ptrCast(&ins_ct_value),
+            .buffer_length = @sizeOf(i64),
         },
         // sort
         .{
@@ -576,7 +577,6 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask, allocator: std.
         var ins_lm_value: i64 = task.last_modified;
         var ins_due_value: i64 = task.due_time;
         var ins_ct_value: i64 = task.completed_time orelse 0;
-        var ins_ct_is_null: c.my_bool = if (task.completed_time == null) 1 else 0;
         var ins_detail_is_null: c.my_bool = 1;
         var ins_recurrence_is_null: c.my_bool = 1;
         var ins_importance_is_null: c.my_bool = 1;
@@ -649,7 +649,6 @@ pub fn upsertTask(self: *Self, io: std.Io, task: types.SyncTask, allocator: std.
                 .buffer_type = c.MYSQL_TYPE_LONGLONG,
                 .buffer = @ptrCast(&ins_ct_value),
                 .buffer_length = @sizeOf(i64),
-                .is_null = &ins_ct_is_null,
             },
             // sort
             .{

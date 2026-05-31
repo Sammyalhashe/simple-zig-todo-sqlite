@@ -521,23 +521,23 @@ CREATE TABLE IF NOT EXISTS  supernotedb.`f_user_file` (
 -- Table structure for t_schedule_recur_task
 -- ----------------------------
 CREATE TABLE IF NOT EXISTS  supernotedb.`t_schedule_recur_task` (
-  `task_id` varchar(255) NOT NULL COMMENT '子事件任务列表Id',
-  `recurrence_id` varchar(255) DEFAULT NULL COMMENT '根任务的Id(ScheduleTask)',
-  `task_list_id` varchar(255) DEFAULT NULL COMMENT '任务组Id',
-  `user_id` bigint(20) NOT NULL COMMENT '用户id',
-  `last_modified` bigint(20) NOT NULL COMMENT '任务最后修改时间(UTC时间戳)',
-  `due_time` bigint(20) DEFAULT NULL COMMENT '任务过期时间(UTC时间戳)',
-  `completed_time` bigint(20) DEFAULT NULL COMMENT '任务完成时间(UTC时间戳)',
-  `status` varchar(255) DEFAULT NULL COMMENT '任务状态，可以是"needsAction"或"completed"',
-  `is_deleted` char(2) NOT NULL DEFAULT 'N' COMMENT '是否已经删除，Y=是，N=否，默认''N''',
-  `sort` int(11) DEFAULT NULL COMMENT '在自定义组或者收集箱中未完成的编号',
-  `sort_completed` int(11) DEFAULT NULL COMMENT '在自定义组或者收集箱中已完成的编号',
-  `planer_sort` int(11) DEFAULT NULL COMMENT '在计划中未完成的编号',
-  `all_sort` int(11) DEFAULT NULL COMMENT '在all中未完成的编号',
-  `all_sort_completed` int(11) DEFAULT NULL COMMENT '在all中已完成的编号',
-  `sort_time` bigint(20) DEFAULT NULL COMMENT '改变编号的时间',
-  `planer_sort_time` bigint(20) DEFAULT NULL COMMENT '改变编号的时间',
-  `all_sort_time` bigint(20) DEFAULT NULL COMMENT '改变编号的时间',
+  `task_id` varchar(255) NOT NULL COMMENT 'Sub-event task list ID',
+  `recurrence_id` varchar(255) DEFAULT NULL COMMENT 'Root task ID (ScheduleTask)',
+  `task_list_id` varchar(255) DEFAULT NULL COMMENT 'Task group ID',
+  `user_id` bigint(20) NOT NULL COMMENT 'User ID',
+  `last_modified` bigint(20) NOT NULL COMMENT 'Task last modified time (UTC timestamp)',
+  `due_time` bigint(20) DEFAULT NULL COMMENT 'Task due time (UTC timestamp)',
+  `completed_time` bigint(20) DEFAULT NULL COMMENT 'Task completion time (UTC timestamp)',
+  `status` varchar(255) DEFAULT NULL COMMENT 'Task status, either "needsAction" or "completed"',
+  `is_deleted` char(2) NOT NULL DEFAULT 'N' COMMENT 'Whether deleted, Y=yes, N=no, default ''N''',
+  `sort` int(11) DEFAULT NULL COMMENT 'Incomplete sort order in custom group or inbox',
+  `sort_completed` int(11) DEFAULT NULL COMMENT 'Completed sort order in custom group or inbox',
+  `planer_sort` int(11) DEFAULT NULL COMMENT 'Incomplete sort order in planner',
+  `all_sort` int(11) DEFAULT NULL COMMENT 'Incomplete sort order in all tasks',
+  `all_sort_completed` int(11) DEFAULT NULL COMMENT 'Completed sort order in all tasks',
+  `sort_time` bigint(20) DEFAULT NULL COMMENT 'Time when sort order was changed',
+  `planer_sort_time` bigint(20) DEFAULT NULL COMMENT 'Time when planner sort order was changed',
+  `all_sort_time` bigint(20) DEFAULT NULL COMMENT 'Time when all-tasks sort order was changed',
   PRIMARY KEY (`task_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
@@ -545,12 +545,12 @@ CREATE TABLE IF NOT EXISTS  supernotedb.`t_schedule_recur_task` (
 -- Table structure for t_schedule_sort
 -- ----------------------------
 CREATE TABLE IF NOT EXISTS  supernotedb.`t_schedule_sort` (
-  `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'id',
-  `user_id` bigint(20) NOT NULL COMMENT '用户id',
-  `task_list_id` varchar(255) DEFAULT NULL COMMENT '任务组id',
-  `title` varchar(255) DEFAULT NULL COMMENT '任务组名称',
+  `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+  `user_id` bigint(20) NOT NULL COMMENT 'User ID',
+  `task_list_id` varchar(255) DEFAULT NULL COMMENT 'Task group ID',
+  `title` varchar(255) DEFAULT NULL COMMENT 'Task group name',
   `last_modify` bigint(20) DEFAULT NULL,
-  `content` text NOT NULL COMMENT '排序内容',
+  `content` text NOT NULL COMMENT 'Sort content',
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
@@ -558,28 +558,28 @@ CREATE TABLE IF NOT EXISTS  supernotedb.`t_schedule_sort` (
 -- Table structure for t_schedule_task
 -- ----------------------------
 CREATE TABLE IF NOT EXISTS  supernotedb.`t_schedule_task` (
-  `task_id` varchar(255) NOT NULL COMMENT '任务Id',
-  `task_list_id` varchar(255) DEFAULT NULL COMMENT '任务组Id',
-  `user_id` bigint(20) NOT NULL COMMENT '用户id',
-  `title` varchar(600) DEFAULT NULL COMMENT '标题',
-  `detail` varchar(255) DEFAULT '' COMMENT '任务的详情',
-  `last_modified` bigint(20) DEFAULT NULL COMMENT '任务最后修改时间(UTC时间戳)',
-  `recurrence` varchar(255) DEFAULT '' COMMENT '任务的重复规则遵循RFC5545重复规则标准',
-  `is_reminder_on` char(2) NOT NULL DEFAULT 'N' COMMENT '是否需要提醒，Y=需要，N=不需要',
-  `status` varchar(255) DEFAULT '' COMMENT '任务的状态，可以是"needsAction"或"completed"',
-  `importance` varchar(255) DEFAULT '' COMMENT '任务的重要等级',
-  `due_time` bigint(20) NOT NULL COMMENT '任务过期时间(UTC时间戳)',
-  `completed_time` bigint(20) DEFAULT NULL COMMENT '任务完成时间(UTC时间戳)',
-  `links` varchar(5000) DEFAULT NULL COMMENT '任务的链接属性',
-  `is_deleted` char(2) NOT NULL DEFAULT 'N' COMMENT '是否已经删除，Y=是，N=否，默认''N''',
-  `sort` int(11) DEFAULT NULL COMMENT '在自定义组或者收集箱中未完成的编号',
-  `sort_completed` int(11) DEFAULT NULL COMMENT '在自定义组或者收集箱中已完成的编号',
-  `planer_sort` int(11) DEFAULT NULL COMMENT '在计划中未完成的编号',
-  `all_sort` int(11) DEFAULT NULL COMMENT '在all中未完成的编号',
-  `all_sort_completed` int(11) DEFAULT NULL COMMENT '在all中已完成的编号',
-  `sort_time` bigint(20) DEFAULT NULL COMMENT '改变编号的时间',
-  `planer_sort_time` bigint(20) DEFAULT NULL COMMENT '改变编号的时间',
-  `all_sort_time` bigint(20) DEFAULT NULL COMMENT '改变编号的时间',
+  `task_id` varchar(255) NOT NULL COMMENT 'Task ID',
+  `task_list_id` varchar(255) DEFAULT NULL COMMENT 'Task group ID',
+  `user_id` bigint(20) NOT NULL COMMENT 'User ID',
+  `title` varchar(600) DEFAULT NULL COMMENT 'Title',
+  `detail` varchar(255) DEFAULT '' COMMENT 'Task details',
+  `last_modified` bigint(20) DEFAULT NULL COMMENT 'Task last modified time (UTC timestamp)',
+  `recurrence` varchar(255) DEFAULT '' COMMENT 'Task recurrence rules following RFC5545 standard',
+  `is_reminder_on` char(2) NOT NULL DEFAULT 'N' COMMENT 'Whether reminder is on, Y=yes, N=no',
+  `status` varchar(255) DEFAULT '' COMMENT 'Task status, either "needsAction" or "completed"',
+  `importance` varchar(255) DEFAULT '' COMMENT 'Task importance level',
+  `due_time` bigint(20) NOT NULL COMMENT 'Task due time (UTC timestamp)',
+  `completed_time` bigint(20) DEFAULT NULL COMMENT 'Task completion time (UTC timestamp)',
+  `links` varchar(5000) DEFAULT NULL COMMENT 'Task link properties',
+  `is_deleted` char(2) NOT NULL DEFAULT 'N' COMMENT 'Whether deleted, Y=yes, N=no, default ''N''',
+  `sort` int(11) DEFAULT NULL COMMENT 'Incomplete sort order in custom group or inbox',
+  `sort_completed` int(11) DEFAULT NULL COMMENT 'Completed sort order in custom group or inbox',
+  `planer_sort` int(11) DEFAULT NULL COMMENT 'Incomplete sort order in planner',
+  `all_sort` int(11) DEFAULT NULL COMMENT 'Incomplete sort order in all tasks',
+  `all_sort_completed` int(11) DEFAULT NULL COMMENT 'Completed sort order in all tasks',
+  `sort_time` bigint(20) DEFAULT NULL COMMENT 'Time when sort order was changed',
+  `planer_sort_time` bigint(20) DEFAULT NULL COMMENT 'Time when planner sort order was changed',
+  `all_sort_time` bigint(20) DEFAULT NULL COMMENT 'Time when all-tasks sort order was changed',
   PRIMARY KEY (`task_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
@@ -587,12 +587,12 @@ CREATE TABLE IF NOT EXISTS  supernotedb.`t_schedule_task` (
 -- Table structure for t_schedule_task_group
 -- ----------------------------
 CREATE TABLE IF NOT EXISTS  supernotedb.`t_schedule_task_group` (
-  `task_list_id` varchar(255) NOT NULL COMMENT '任务组Id',
-  `user_id` bigint(20) NOT NULL COMMENT '用户Id',
-  `title` varchar(255) NOT NULL COMMENT '任务组名称',
-  `last_modified` bigint(20) NOT NULL COMMENT '任务组的最后修改时间，仅随title 变动',
-  `is_deleted` char(2) NOT NULL DEFAULT 'N' COMMENT '是否已经删除，Y=是，N=否，默认''N''',
-  `create_time` bigint(20) DEFAULT NULL COMMENT '任务列表的创建时间',
+  `task_list_id` varchar(255) NOT NULL COMMENT 'Task group ID',
+  `user_id` bigint(20) NOT NULL COMMENT 'User ID',
+  `title` varchar(255) NOT NULL COMMENT 'Task group name',
+  `last_modified` bigint(20) NOT NULL COMMENT 'Task group last modified time, only changes with title',
+  `is_deleted` char(2) NOT NULL DEFAULT 'N' COMMENT 'Whether deleted, Y=yes, N=no, default ''N''',
+  `create_time` bigint(20) DEFAULT NULL COMMENT 'Task list creation time',
   PRIMARY KEY (`task_list_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
