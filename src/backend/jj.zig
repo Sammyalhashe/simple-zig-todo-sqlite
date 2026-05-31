@@ -425,7 +425,7 @@ fn jjTrack(io: std.Io, file_path: []const u8) void {
 
 fn jjHasChanges(io: std.Io, cwd: []const u8) bool {
     // Check if there are any changes in the jj workspace
-    const argv: [3][]const u8 = .{ "jj", "diff", "--no-graph" };
+    const argv: [3][]const u8 = .{ "jj", "diff", "--no-pager" };
     var child = std.process.spawn(io, .{
         .argv = &argv,
         .cwd = .{ .path = cwd },
@@ -436,7 +436,7 @@ fn jjHasChanges(io: std.Io, cwd: []const u8) bool {
     
     const term = child.wait(io) catch return false;
     return switch (term) {
-        .exited => |code| code == 0, // jj diff exits with 0 if no changes, non-zero if changes
+        .exited => |code| code != 0, // jj diff exits with 0 if no changes, non-zero if changes
         else => false,
     };
 }
