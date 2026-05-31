@@ -77,6 +77,12 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const config_module = b.createModule(.{
+        .root_source_file = b.path("src/config.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // ssh_tunnel has no deps beyond std — it only uses std.Io and std.process
     const ssh_tunnel_module = b.createModule(.{
         .root_source_file = b.path("src/ssh_tunnel.zig"),
@@ -98,6 +104,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "ssh_tunnel", .module = ssh_tunnel_module },
                 .{ .name = "sync", .module = sync_module },
                 .{ .name = "tui", .module = tui_module },
+                .{ .name = "config", .module = config_module },
             },
         }),
     });

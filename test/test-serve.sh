@@ -50,7 +50,7 @@ rm -f "$SOCKET_PATH"
 # --- Start server ---
 
 cd "$WORKDIR"
-"$TODO_BIN" serve &
+"$TODO_BIN" -b sqlite serve &
 SERVER_PID=$!
 
 # Wait for socket to appear (max 5 seconds)

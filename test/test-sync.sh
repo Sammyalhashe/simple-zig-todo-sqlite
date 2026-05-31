@@ -93,7 +93,7 @@ query_local() {
 # Helper to add a local task via the CLI
 add_local_task() {
     local title="$1"
-    (cd "$WORKDIR" && "$TODO_BIN" add "$title")
+    (cd "$WORKDIR" && "$TODO_BIN" -b sqlite add "$title")
 }
 
 # --- Test 1: dry-run push ---
