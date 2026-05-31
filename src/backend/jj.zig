@@ -423,22 +423,14 @@ fn jjTrack(io: std.Io, file_path: []const u8) void {
     };
 }
 
-fn jjHasChanges(io: std.Io, cwd: []const u8) bool {
-    // Check if there are any changes in the jj workspace
-    const argv: [3][]const u8 = .{ "jj", "diff", "--no-pager" };
-    var child = std.process.spawn(io, .{
-        .argv = &argv,
+fn jjHasChanges(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8) bool {
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "jj", "diff", "--summary", "--no-pager" },
         .cwd = .{ .path = cwd },
-        .stdin = .ignore,
-        .stdout = .ignore, // We don't need the output, just the exit code
-        .stderr = .ignore,
-    }) catch return false; // If spawn fails, assume no changes to be safe
-    
-    const term = child.wait(io) catch return false;
-    return switch (term) {
-        .exited => |code| code != 0, // jj diff exits with 0 if no changes, non-zero if changes
-        else => false,
-    };
+    }) catch return false;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    return result.stdout.len > 0;
 }
 
 fn makeCommitMessage(io: std.Io, buf: *[64]u8) []const u8 {
@@ -501,7 +493,7 @@ pub fn syncToRemote(self: *Self) void {
     }
 
     // Skip creating a new commit if there are no changes
-    if (jjHasChanges(self.io, cwd)) {
+    if (jjHasChanges(self.allocator, self.io, cwd)) {
         var msg_buf: [64]u8 = undefined;
         const message = makeCommitMessage(self.io, &msg_buf);
         jjDescribe(self.io, cwd, message) catch |err| {
