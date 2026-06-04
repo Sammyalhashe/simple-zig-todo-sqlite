@@ -70,11 +70,11 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8) !*S
     } else {
         const cwd = std.fs.path.dirname(self.file_path) orelse ".";
         if (shouldFetch(io)) {
-            jjRun(&.{ "jj", "git", "fetch" }, io, cwd) catch |err| {
+            jjRunOpts(&.{ "jj", "git", "fetch" }, io, cwd, .{ .quiet = true }) catch |err| {
                 std.log.warn("jj git fetch failed: {s}", .{@errorName(err)});
             };
             if (jjBookmarkExists(io, cwd)) {
-                jjRun(&.{ "jj", "rebase", "-d", "master@origin" }, io, cwd) catch |err| {
+                jjRunOpts(&.{ "jj", "rebase", "-d", "master@origin" }, io, cwd, .{ .quiet = true }) catch |err| {
                     std.log.warn("jj rebase failed: {s}", .{@errorName(err)});
                 };
             }
@@ -380,13 +380,21 @@ fn checkToolExists(io: std.Io, tool: []const u8, err_val: JjError) JjError!void 
     }
 }
 
+const SubprocessOptions = struct {
+    quiet: bool = false,
+};
+
 fn runSubprocess(argv: []const []const u8, io: std.Io, cwd: []const u8) JjError!void {
+    return runSubprocessOpts(argv, io, cwd, .{});
+}
+
+fn runSubprocessOpts(argv: []const []const u8, io: std.Io, cwd: []const u8, opts: SubprocessOptions) JjError!void {
     var child = std.process.spawn(io, .{
         .argv = argv,
         .cwd = .{ .path = cwd },
         .stdin = .ignore,
         .stdout = .ignore,
-        .stderr = .inherit,
+        .stderr = if (opts.quiet) .ignore else .inherit,
     }) catch return JjError.SubprocessFailed;
     const term = child.wait(io) catch return JjError.SubprocessFailed;
     switch (term) {
@@ -396,8 +404,12 @@ fn runSubprocess(argv: []const []const u8, io: std.Io, cwd: []const u8) JjError!
 }
 
 fn jjRun(comptime argv: []const []const u8, io: std.Io, cwd: []const u8) !void {
+    return jjRunOpts(argv, io, cwd, .{});
+}
+
+fn jjRunOpts(comptime argv: []const []const u8, io: std.Io, cwd: []const u8, opts: SubprocessOptions) !void {
     comptime std.debug.assert(argv.len >= 2);
-    runSubprocess(argv, io, cwd) catch {
+    runSubprocessOpts(argv, io, cwd, opts) catch {
         std.log.err(argv[0] ++ " " ++ argv[1] ++ " failed", .{});
         return JjError.SubprocessFailed;
     };
