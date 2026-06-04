@@ -68,6 +68,18 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8) !*S
         try self.writeFileToDisk();
         jjTrack(io, file_path);
     } else {
+        const cwd = std.fs.path.dirname(self.file_path) orelse ".";
+        if (shouldFetch(io)) {
+            jjRun(&.{ "jj", "git", "fetch" }, io, cwd) catch |err| {
+                std.log.warn("jj git fetch failed: {s}", .{@errorName(err)});
+            };
+            if (jjBookmarkExists(io, cwd)) {
+                jjRun(&.{ "jj", "rebase", "-d", "master@origin" }, io, cwd) catch |err| {
+                    std.log.warn("jj rebase failed: {s}", .{@errorName(err)});
+                };
+            }
+            touchFetchStamp(io);
+        }
         self.loadFromDisk() catch |err| {
             self.deinitTasks();
             return err;
@@ -412,6 +424,34 @@ fn jjBookmarkExists(io: std.Io, cwd: []const u8) bool {
         .exited => |code| code == 0,
         else => false,
     };
+}
+
+const fetch_stale_ns: i96 = 5 * 60 * std.time.ns_per_s;
+const fetch_stamp_name = ".todo-last-fetch";
+
+fn getFetchStampPath(buf: []u8) ?[]const u8 {
+    const home = std.mem.span(std.c.getenv("HOME") orelse return null);
+    const len = home.len + 1 + fetch_stamp_name.len;
+    if (len > buf.len) return null;
+    @memcpy(buf[0..home.len], home);
+    buf[home.len] = '/';
+    @memcpy(buf[home.len + 1 ..][0..fetch_stamp_name.len], fetch_stamp_name);
+    return buf[0..len];
+}
+
+fn shouldFetch(io: std.Io) bool {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = getFetchStampPath(&buf) orelse return true;
+    const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch return true;
+    const now = std.Io.Timestamp.now(io, .real);
+    return (now.nanoseconds - stat.mtime.nanoseconds) >= fetch_stale_ns;
+}
+
+fn touchFetchStamp(io: std.Io) void {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = getFetchStampPath(&buf) orelse return;
+    const f = std.Io.Dir.cwd().createFile(io, path, .{}) catch return;
+    f.close(io);
 }
 
 fn jjTrack(io: std.Io, file_path: []const u8) void {
