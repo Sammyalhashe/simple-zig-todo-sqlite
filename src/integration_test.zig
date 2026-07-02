@@ -16,7 +16,7 @@ fn getTestMariaDb(allocator: std.mem.Allocator) ?*db.MariaBackend {
     const port_ptr = std.c.getenv("TEST_MARIADB_PORT") orelse return null;
     const port_str: [:0]const u8 = std.mem.span(port_ptr);
     const port = std.fmt.parseInt(u16, port_str, 10) catch return null;
-    return db.openMariaDb(allocator, host, port, null) catch null;
+    return db.openMariaDb(allocator, host, port, "root", null) catch null;
 }
 
 /// Deletes all test rows (task_id starting with "test-") to isolate tests.

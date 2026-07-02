@@ -86,8 +86,8 @@ pub fn openSqlite(allocator: std.mem.Allocator, dbPath: [:0]const u8) !*SqliteBa
 }
 
 /// Connects to a remote MariaDB instance.
-pub fn openMariaDb(allocator: std.mem.Allocator, host: []const u8, port: u16, password: ?[]const u8) !*MariaBackend {
-    return MariaBackend.init(allocator, host, port, password);
+pub fn openMariaDb(allocator: std.mem.Allocator, host: []const u8, port: u16, user: []const u8, password: ?[]const u8) !*MariaBackend {
+    return MariaBackend.init(allocator, host, port, user, password);
 }
 
 /// Opens or creates a jj-backed JSON-lines task file.

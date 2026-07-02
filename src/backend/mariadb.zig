@@ -136,10 +136,17 @@ fn getDefaultUser(self: *Self) !void {
     }
 }
 
-pub fn init(allocator: std.mem.Allocator, host: []const u8, port: u16, password: ?[]const u8) !*Self {
+pub fn init(allocator: std.mem.Allocator, host: []const u8, port: u16, user: []const u8, password: ?[]const u8) !*Self {
     const conn = c.mysql_init(null) orelse return error.OutOfMemory;
-    const pw_ptr = if (password) |pw| pw.ptr else null;
-    if (c.mysql_real_connect(conn, host.ptr, "root", pw_ptr, "supernotedb", port, null, 0) == null) {
+    // Slices from the JSON config are not NUL-terminated; C needs copies that are.
+    const host_z = try allocator.dupeSentinel(u8, host, 0);
+    defer allocator.free(host_z);
+    const user_z = try allocator.dupeSentinel(u8, user, 0);
+    defer allocator.free(user_z);
+    const pw_z: ?[:0]u8 = if (password) |pw| try allocator.dupeSentinel(u8, pw, 0) else null;
+    defer if (pw_z) |pw| allocator.free(pw);
+    const pw_ptr = if (pw_z) |pw| pw.ptr else null;
+    if (c.mysql_real_connect(conn, host_z.ptr, user_z.ptr, pw_ptr, "supernotedb", port, null, 0) == null) {
         std.log.err("MariaDB connection error: {s}", .{c.mysql_error(conn)});
         return error.SqlError;
     }

@@ -18,6 +18,9 @@ pub const Configuration = struct {
     pub const MariadbConfig = struct {
         host: []const u8,
         password: ?[]const u8 = null,
+        user: []const u8 = "root",
+        /// When set, connect to host:port directly instead of through an SSH tunnel.
+        port: ?u16 = null,
     };
 
     pub const JjConfig = struct {

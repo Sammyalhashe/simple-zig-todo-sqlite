@@ -55,8 +55,15 @@ fn createDatabase(
                     return error.SqlError;
                 };
                 const host: []const u8 = if (std.c.getenv("TODO_MARIADB_HOST")) |h| std.mem.span(h) else maria.host;
-                const mariadb = db.openMariaDb(allocator, host, port, maria.password) catch |err| {
+                const mariadb = db.openMariaDb(allocator, host, port, maria.user, maria.password) catch |err| {
                     std.log.err("failed to connect to test MariaDB: {s}", .{@errorName(err)});
+                    return error.SqlError;
+                };
+                return .{ .mariadb = mariadb };
+            }
+            if (maria.port) |port| {
+                const mariadb = db.openMariaDb(allocator, maria.host, port, maria.user, maria.password) catch |err| {
+                    std.log.err("failed to connect to database at {s}:{d}: {s}", .{ maria.host, port, @errorName(err) });
                     return error.SqlError;
                 };
                 return .{ .mariadb = mariadb };
@@ -66,7 +73,7 @@ fn createDatabase(
                 return error.SqlError;
             };
             errdefer if (tunnel.*) |*t| t.deinit(io);
-            const mariadb = db.openMariaDb(allocator, "127.0.0.1", ssh_tunnel.local_forward_port, maria.password) catch |err| {
+            const mariadb = db.openMariaDb(allocator, "127.0.0.1", ssh_tunnel.local_forward_port, maria.user, maria.password) catch |err| {
                 std.log.err("failed to connect to remote database: {s}", .{@errorName(err)});
                 return error.SqlError;
             };
@@ -228,8 +235,14 @@ fn runSync(
                 return error.SqlError;
             };
             const host: []const u8 = if (std.c.getenv("TODO_MARIADB_HOST")) |h| std.mem.span(h) else maria.host;
-            break :blk db.openMariaDb(arena, host, port, maria.password) catch |err| {
+            break :blk db.openMariaDb(arena, host, port, maria.user, maria.password) catch |err| {
                 std.log.err("failed to connect to test MariaDB: {s}", .{@errorName(err)});
+                return error.SqlError;
+            };
+        }
+        if (maria.port) |port| {
+            break :blk db.openMariaDb(arena, maria.host, port, maria.user, maria.password) catch |err| {
+                std.log.err("failed to connect to database at {s}:{d}: {s}", .{ maria.host, port, @errorName(err) });
                 return error.SqlError;
             };
         }
@@ -238,7 +251,7 @@ fn runSync(
             std.log.err("failed to spawn SSH tunnel: {s}", .{@errorName(err)});
             return error.SqlError;
         };
-        break :blk db.openMariaDb(arena, "127.0.0.1", ssh_tunnel.local_forward_port, maria.password) catch |err| {
+        break :blk db.openMariaDb(arena, "127.0.0.1", ssh_tunnel.local_forward_port, maria.user, maria.password) catch |err| {
             std.log.err("failed to connect to remote database: {s}", .{@errorName(err)});
             return error.SqlError;
         };

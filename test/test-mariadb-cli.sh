@@ -216,6 +216,17 @@ echo "--- Test 9: complete nonexistent task ---"
 OUTPUT=$(cd "$WORKDIR" && "$TODO_BIN" $TODO_REMOTE complete "nonexistent-id-xyz" 2>&1) || true
 assert_contains "error message for nonexistent task" "$OUTPUT" "no task found"
 
+# --- Test 10: direct connection from ~/.todo.json (no tunnel, no test env vars) ---
+
+echo ""
+echo "--- Test 10: direct connection configured by mariadb.port ---"
+cat > "$WORKDIR/.todo.json" <<EOF
+{"backend":"mariadb","mariadb":{"host":"$TEST_MARIADB_HOST","port":$TEST_MARIADB_PORT,"user":"todo_reader","password":"unused-under-skip-grant-tables"}}
+EOF
+OUTPUT=$(cd "$WORKDIR" && env -u TODO_MARIADB_PORT -u TODO_MARIADB_HOST HOME="$WORKDIR" "$TODO_BIN" list -j 2>&1) || true
+assert_contains "config-file direct connection lists tasks" "$OUTPUT" "test-cli-task-2"
+assert_not_contains "config-file direct connection skips the SSH tunnel" "$OUTPUT" "SSH tunnel"
+
 # --- Summary ---
 
 echo ""
