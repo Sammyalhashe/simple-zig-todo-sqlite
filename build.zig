@@ -26,10 +26,10 @@ pub fn build(b: *std.Build) void {
     //     \           |
     //      \----+-----+
     //           |
-    //          db
-    //        / | \
-    //   server sync tui
-    //       \   |   /
+    //            db
+    //        /  / | \
+    //   server http sync tui
+    //       \   \  |   /
     //        main (+ ssh_tunnel, yazap)
 
     const json_module = b.createModule(.{
@@ -50,6 +50,16 @@ pub fn build(b: *std.Build) void {
 
     const server_module = b.createModule(.{
         .root_source_file = b.path("src/server.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "db", .module = db_module },
+            .{ .name = "json", .module = json_module },
+        },
+    });
+
+    const http_module = b.createModule(.{
+        .root_source_file = b.path("src/http.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -101,6 +111,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "db", .module = db_module },
                 .{ .name = "json", .module = json_module },
                 .{ .name = "server", .module = server_module },
+                .{ .name = "http", .module = http_module },
                 .{ .name = "ssh_tunnel", .module = ssh_tunnel_module },
                 .{ .name = "sync", .module = sync_module },
                 .{ .name = "tui", .module = tui_module },
@@ -149,6 +160,23 @@ pub fn build(b: *std.Build) void {
     sync_tests.root_module.linkSystemLibrary("mysqlclient", .{});
     if (is_darwin) sync_tests.root_module.addCSourceFile(.{ .file = b.path("src/sqlite_helpers.c") });
     test_step.dependOn(&b.addRunArtifact(sync_tests).step);
+
+    // http.zig: request-line parsing and routing
+    const http_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/http.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "db", .module = db_module },
+                .{ .name = "json", .module = json_module },
+            },
+        }),
+    });
+    http_tests.root_module.linkSystemLibrary("sqlite3", .{});
+    http_tests.root_module.linkSystemLibrary("mysqlclient", .{});
+    if (is_darwin) http_tests.root_module.addCSourceFile(.{ .file = b.path("src/sqlite_helpers.c") });
+    test_step.dependOn(&b.addRunArtifact(http_tests).step);
 
     // --- Integration tests (`zig build integration-test`) ---
     // Requires a running MariaDB instance. Run via the test harness:

@@ -21,6 +21,7 @@ Binary is placed in `zig-out/bin/todo`.
 ./zig-out/bin/todo interactive    # TUI mode
 ./zig-out/bin/todo sync           # sync local SQLite to remote MariaDB
 ./zig-out/bin/todo serve          # start JSON-RPC daemon
+./zig-out/bin/todo http --addr=127.0.0.1 --port=2310  # read-only HTTP: GET /tasks, /healthz
 ```
 
 Remote MariaDB: `zig build run -r=<host> -p=<password> -- <subcommand>`
@@ -57,6 +58,7 @@ zig build test
 ./test/test-mariadb.sh zig build integration-test
 ./test/test-sync.sh
 ./test/test-serve.sh
+./test/test-http.sh
 ```
 
 **Standard**: After every large change, both unit tests and integration tests must pass before committing.
@@ -69,9 +71,9 @@ c (C interop)    json (parsing/serialization)
    \----+-----+
         |
        db (AnyBackend union: sqlite, mariadb, jj)
-     /  |  \
-server sync tui
-    \   |   /
+    /   /  |  \
+server http sync tui
+    \   \  |   /
     main (CLI entrypoint)
 ```
 

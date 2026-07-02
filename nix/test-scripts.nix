@@ -38,6 +38,23 @@ let
     "$SCRIPT"
   '';
 
+  test-http = pkgs.writeShellScriptBin "test-http" ''
+    set -euo pipefail
+    echo "=== Running http integration test ==="
+
+    SCRIPT="''${TEST_HARNESS_DIR:-./test}/test-http.sh"
+    if [[ ! -x "$SCRIPT" ]]; then
+      echo "ERROR: Cannot find test-http.sh at $SCRIPT"
+      echo "Run this from the project root, or set TEST_HARNESS_DIR."
+      exit 1
+    fi
+
+    # Ensure the binary is built
+    zig build
+
+    "$SCRIPT"
+  '';
+
   test-sync = pkgs.writeShellScriptBin "test-sync" ''
     set -euo pipefail
     echo "=== Running sync integration test ==="
@@ -81,6 +98,8 @@ let
     echo ""
     test-serve
     echo ""
+    test-http
+    echo ""
     test-integration
     echo ""
     test-sync
@@ -93,6 +112,7 @@ in
     test-unit
     test-integration
     test-serve
+    test-http
     test-sync
     test-mariadb-cli
     test-all
@@ -101,6 +121,7 @@ in
     test-unit
     test-integration
     test-serve
+    test-http
     test-sync
     test-mariadb-cli
     test-all

@@ -2,6 +2,7 @@ const std = @import("std");
 const db = @import("db");
 const json = @import("json");
 const server = @import("server");
+const http = @import("http");
 const ssh_tunnel = @import("ssh_tunnel");
 const sync = @import("sync");
 const tui = @import("tui");
@@ -170,6 +171,18 @@ fn serveCmd(io: std.Io, database: db.Db, arena: std.mem.Allocator) void {
     };
 }
 
+fn httpCmd(io: std.Io, database: db.Db, http_matches: ArgMatches, arena: std.mem.Allocator) void {
+    const addr = http_matches.getSingleValue("addr") orelse "127.0.0.1";
+    const port_str = http_matches.getSingleValue("port") orelse "2310";
+    const port = std.fmt.parseInt(u16, port_str, 10) catch {
+        std.log.err("invalid port '{s}'", .{port_str});
+        return;
+    };
+    http.serve(io, database, addr, port, arena) catch |err| {
+        std.log.err("http server failed: {s}", .{@errorName(err)});
+    };
+}
+
 fn runSync(
     io: std.Io,
     opts: StartupOption,
@@ -305,6 +318,11 @@ pub fn main(init: std.process.Init) !void {
 
     const serve_cmd = app.createCommand("serve", "Start JSON-RPC daemon on Unix socket.");
     try todo.addSubcommand(serve_cmd);
+
+    var http_cmd = app.createCommand("http", "Serve incomplete tasks read-only over HTTP (GET /tasks, GET /healthz).");
+    try http_cmd.addArg(Arg.singleValueOption("addr", null, "Address to listen on (default 127.0.0.1)"));
+    try http_cmd.addArg(Arg.singleValueOption("port", null, "Port to listen on (default 2310)"));
+    try todo.addSubcommand(http_cmd);
 
     var sync_cmd = app.createCommand("sync", "Sync the local/remote databases.");
     try sync_cmd.addArg(Arg.positional("direction", "Sync direction: push, pull, or both", null));
@@ -456,6 +474,13 @@ pub fn main(init: std.process.Init) !void {
         };
         defer ctx.deinit(io);
         serveCmd(io, ctx.d_database, init.arena.allocator());
+    } else if (matches.subcommandMatches("http")) |http_matches| {
+        var ctx = DbContext.init(io, opts, init.arena.allocator()) catch |err| {
+            std.log.err("failed to initialize database: {s}", .{@errorName(err)});
+            return;
+        };
+        defer ctx.deinit(io);
+        httpCmd(io, ctx.d_database, http_matches, init.arena.allocator());
     } else {
         app.displayHelp(io) catch {};
         return;

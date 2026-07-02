@@ -12,6 +12,7 @@ A tiny command‑line todo manager written in Zig (0.16.0) with three backends: 
 * `todo interactive` – Interactive ncurses TUI mode
 * `todo sync` – Sync local SQLite to remote MariaDB
 * `todo serve` – Start JSON-RPC daemon on Unix socket
+* `todo http [--addr=<ip>] [--port=<n>]` – Serve incomplete tasks read-only over HTTP (`GET /tasks`, `GET /healthz`; default 127.0.0.1:2310)
 
 ## Prerequisites
 
