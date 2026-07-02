@@ -129,7 +129,22 @@ BIG=$(head -c 9000 /dev/zero | tr '\0' 'a')
 assert_eq "oversized header is 431" "$(status_of -H "X-Big: $BIG" "$BASE/healthz")" "431"
 assert_eq "server still serves after 431" "$(status_of "$BASE/healthz")" "200"
 
-# Test 7: cleanup
+# Test 7: a silent client and a half-sent request do not block later requests
+exec 3<>"/dev/tcp/127.0.0.1/$PORT"
+exec 4<>"/dev/tcp/127.0.0.1/$PORT"
+printf 'GET /healthz HTTP/1.1\r\nHost: x\r\n' >&4
+SECONDS=0
+assert_eq "served behind stalled clients" "$(status_of --max-time 15 "$BASE/healthz")" "200"
+if (( SECONDS <= 12 )); then
+    echo "PASS: stalled clients timed out (${SECONDS}s)"
+    PASSED=$((PASSED + 1))
+else
+    echo "FAIL: stalled clients held the server for ${SECONDS}s"
+    FAILED=$((FAILED + 1))
+fi
+exec 3>&- 4>&-
+
+# Test 8: cleanup
 kill "$SERVER_PID"
 wait "$SERVER_PID" 2>/dev/null || true
 if kill -0 "$SERVER_PID" 2>/dev/null; then

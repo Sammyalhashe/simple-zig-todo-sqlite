@@ -4,6 +4,7 @@ const json = @import("json");
 const net = std.Io.net;
 
 const max_header_bytes = 8 * 1024;
+const header_timeout: std.Io.Clock.Duration = .{ .raw = .fromSeconds(5), .clock = .awake };
 
 // --- Routing (pure, unit-tested) ---
 
@@ -62,18 +63,19 @@ pub fn serve(io: std.Io, database: db.AnyBackend, address: []const u8, port: u16
 // --- Request handling ---
 
 fn handleConnection(io: std.Io, database: db.AnyBackend, stream: *net.Stream, allocator: std.mem.Allocator) !void {
-    var read_buf: [max_header_bytes]u8 = undefined;
+    var header_buf: [max_header_bytes]u8 = undefined;
     var write_buf: [8192]u8 = undefined;
-    var reader = stream.reader(io, &read_buf);
     var writer = stream.writer(io, &write_buf);
     const w = &writer.interface;
 
-    const which = readRequest(&reader.interface) catch |err| switch (err) {
-        error.StreamTooLong, error.HeadersTooLarge => {
+    const head = readHeaders(io, stream, &header_buf) catch |err| switch (err) {
+        error.HeadersTooLarge => {
             return writeResponse(w, "431 Request Header Fields Too Large", "text/plain", "headers too large\n");
         },
         else => return err,
     };
+    var head_reader: std.Io.Reader = .fixed(head);
+    const which = try readRequest(&head_reader);
 
     switch (which) {
         .tasks => {
@@ -97,21 +99,29 @@ fn handleConnection(io: std.Io, database: db.AnyBackend, stream: *net.Stream, al
     }
 }
 
-/// Reads the request line and drains headers up to the blank line, so the
-/// client never sees a reset while it is still sending.
-fn readRequest(r: *std.Io.Reader) !Route {
-    var total: usize = 0;
-    const first = try r.takeDelimiterInclusive('\n');
-    total += first.len;
-    const which = route(trimCrlf(first));
-
-    while (true) {
-        const line = try r.takeDelimiterInclusive('\n');
-        total += line.len;
-        if (total > max_header_bytes) return error.HeadersTooLarge;
-        if (trimCrlf(line).len == 0) break;
+/// Reads up to the blank line ending the headers. One deadline covers the whole
+/// read, so a silent or trickling client cannot stall the single-threaded loop.
+fn readHeaders(io: std.Io, stream: *net.Stream, buf: []u8) ![]u8 {
+    const deadline = (std.Io.Timeout{ .duration = header_timeout }).toDeadline(io);
+    var len: usize = 0;
+    while (headersEnd(buf[0..len]) == null) {
+        if (len == buf.len) return error.HeadersTooLarge;
+        var slices: [1][]u8 = .{buf[len..]};
+        const op = try io.operateTimeout(.{ .net_read = .{ .socket_handle = stream.socket.handle, .data = &slices } }, deadline);
+        const result = try op.net_read;
+        if (result.data_len == 0) return error.EndOfStream;
+        len += result.data_len;
     }
-    return which;
+    return buf[0..len];
+}
+
+fn headersEnd(data: []const u8) ?usize {
+    return std.mem.indexOf(u8, data, "\r\n\r\n") orelse std.mem.indexOf(u8, data, "\n\n");
+}
+
+fn readRequest(r: *std.Io.Reader) !Route {
+    const first = try r.takeDelimiterInclusive('\n');
+    return route(trimCrlf(first));
 }
 
 fn trimCrlf(line: []const u8) []const u8 {
@@ -140,6 +150,12 @@ test "parseRequestLine rejects malformed lines" {
     try std.testing.expect(parseRequestLine("GET tasks HTTP/1.1") == null);
     try std.testing.expect(parseRequestLine("GET /tasks HTTP/1.1 extra") == null);
     try std.testing.expect(parseRequestLine("GET /tasks SPDY/3") == null);
+}
+
+test "headersEnd finds the blank line with CRLF or bare LF" {
+    try std.testing.expectEqual(@as(?usize, 14), headersEnd("GET / HTTP/1.1\r\n\r\n"));
+    try std.testing.expectEqual(@as(?usize, 14), headersEnd("GET / HTTP/1.1\n\n"));
+    try std.testing.expect(headersEnd("GET / HTTP/1.1\r\nHost: x\r\n") == null);
 }
 
 test "route maps requests" {
