@@ -417,7 +417,7 @@ fn jjRunOpts(comptime argv: []const []const u8, io: std.Io, cwd: []const u8, opt
 
 fn jjDescribe(io: std.Io, cwd: []const u8, message: []const u8) !void {
     const argv: [4][]const u8 = .{ "jj", "describe", "--message", message };
-    runSubprocess(&argv, io, cwd) catch {
+    runSubprocessOpts(&argv, io, cwd, .{ .quiet = true }) catch {
         std.log.err("jj describe failed", .{});
         return JjError.SubprocessFailed;
     };
@@ -530,21 +530,21 @@ fn writeFileToDisk(self: *Self) !void {
 
 pub fn syncToRemote(self: *Self) void {
     const cwd = std.fs.path.dirname(self.file_path) orelse ".";
+    const quiet: SubprocessOptions = .{ .quiet = true };
 
-    jjRun(&.{ "jj", "git", "fetch" }, self.io, cwd) catch |err| {
+    jjRunOpts(&.{ "jj", "git", "fetch" }, self.io, cwd, quiet) catch |err| {
         std.log.warn("jj git fetch failed: {s}", .{@errorName(err)});
         return;
     };
 
     if (jjBookmarkExists(self.io, cwd)) {
-        jjRun(&.{ "jj", "rebase", "-d", "master@origin" }, self.io, cwd) catch |err| {
+        jjRunOpts(&.{ "jj", "rebase", "-d", "master@origin" }, self.io, cwd, quiet) catch |err| {
             std.log.warn("jj rebase failed: {s}", .{@errorName(err)});
         };
     } else {
         std.log.warn("master@origin not found, skipping rebase", .{});
     }
 
-    // Skip creating a new commit if there are no changes
     if (jjHasChanges(self.allocator, self.io, cwd)) {
         var msg_buf: [64]u8 = undefined;
         const message = makeCommitMessage(self.io, &msg_buf);
@@ -560,11 +560,11 @@ pub fn syncToRemote(self: *Self) void {
         return;
     }
 
-    jjRun(&.{ "jj", "bookmark", "set", "master", "-r", "@" }, self.io, cwd) catch |err| {
+    jjRunOpts(&.{ "jj", "bookmark", "set", "master", "-r", "@" }, self.io, cwd, quiet) catch |err| {
         std.log.warn("jj bookmark set master -r @ failed: {s}", .{@errorName(err)});
     };
 
-    jjRun(&.{ "jj", "git", "push" }, self.io, cwd) catch |err| {
+    jjRunOpts(&.{ "jj", "git", "push" }, self.io, cwd, quiet) catch |err| {
         std.log.warn("jj git push failed: {s}", .{@errorName(err)});
     };
 }
