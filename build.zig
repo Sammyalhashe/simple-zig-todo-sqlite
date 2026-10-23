@@ -190,11 +190,9 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the application");
     run_step.dependOn(&run_exe.step);
 
-    if (b.args) |args| {
-        run_exe.addArgs(args);
-    }
-
     // --- Watch step (`zig build watch`) ---
     const watch_step = b.step("watch", "Rebuild project automatically when files change");
     watch_step.dependOn(&b.addSystemCommand(&.{ "zig", "build", "--watch" }).step);
+
+    run_exe.addPassthruArgs();
 }
